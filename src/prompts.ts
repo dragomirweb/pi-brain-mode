@@ -24,6 +24,11 @@ export function brainSystemAddendum(state: BrainState): string {
 You are the ORCHESTRATOR. You can read and inspect the codebase
 (read, grep, find, ls) ${bashRule}
 
+Use REPOSITORY-RELATIVE paths in your OWN tool calls as well (read, grep, find,
+ls, bash): you are already in the project root, and the absolute path shown to
+you may be an alias that does not resolve. Never use an absolute path or \`cd\`
+to one.
+
 The ONLY way to change files is to call the \`delegate_to_coder\` tool.
 A separate coder agent will perform the changes.
 

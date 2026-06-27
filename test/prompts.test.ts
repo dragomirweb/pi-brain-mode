@@ -31,6 +31,7 @@ describe("prompts", () => {
     const addendum = brainSystemAddendum(makeBrainState(config));
 
     expect(addendum).toMatch(/repository-relative|relative path/i);
+    expect(addendum).toMatch(/absolute path/i);
   });
 
   it("says shell is fully removed when bash is not allowed", () => {
