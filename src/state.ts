@@ -1,6 +1,6 @@
 export const DELEGATE_TOOL = "delegate_to_coder";
-export const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
-export const ORCHESTRATOR_TOOLS_NO_BASH = ["read", "grep", "find", "ls"] as const;
+const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
+const ORCHESTRATOR_TOOLS_NO_BASH = ["read", "grep", "find", "ls"] as const;
 
 export interface BrainConfig {
   workerModel: string;

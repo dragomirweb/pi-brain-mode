@@ -2,8 +2,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { BrainConfig } from "./state.ts";
 
-export const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
-export const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
+const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
+const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
+
+export const DEFAULT_CONFIG: BrainConfig = {
+  workerModel: DEFAULT_WORKER_MODEL,
+  fallbackModels: [...DEFAULT_FALLBACK_MODELS],
+  allowBash: true,
+};
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
   pi.registerFlag("brain-worker-model", {

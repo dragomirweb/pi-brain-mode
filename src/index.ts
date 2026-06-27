@@ -2,16 +2,10 @@ import process from "node:process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerBrainCommand } from "./commands.ts";
-import { registerBrainFlags, resolveConfig } from "./config.ts";
+import { DEFAULT_CONFIG, registerBrainFlags, resolveConfig } from "./config.ts";
 import { registerDelegateTool } from "./delegate.ts";
 import { registerBrainEvents } from "./events.ts";
-import { type BrainConfig, createBrainState } from "./state.ts";
-
-const DEFAULT_CONFIG: BrainConfig = {
-  workerModel: "openai-codex/gpt-5.5",
-  fallbackModels: ["claude-opus-4-8"],
-  allowBash: true,
-};
+import { createBrainState } from "./state.ts";
 
 export default function piBrain(pi: ExtensionAPI): void {
   if (process.env.PI_BRAIN_WORKER === "1") return;

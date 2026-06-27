@@ -135,7 +135,7 @@ export function enable(pi: ExtensionAPI, state: BrainState): void {
   persist(pi, state);
 }
 
-export function disable(pi: ExtensionAPI, state: BrainState): void {
+function disable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = false;
   pi.setActiveTools(state.fullTools ?? ["read", "bash", "edit", "write"]);
   persist(pi, state);
