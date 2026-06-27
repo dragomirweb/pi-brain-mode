@@ -38,7 +38,7 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
   });
   pi.registerFlag("brain-reviewer-model", {
     type: "string",
-    description: "Reviewer model id (default: claude-opus-4-8).",
+    description: "Reviewer model id (default: the orchestrator model).",
   });
 }
 

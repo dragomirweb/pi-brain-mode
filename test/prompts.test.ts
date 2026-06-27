@@ -43,6 +43,16 @@ describe("prompts", () => {
     expect(brainSystemAddendum(withReviewer)).toContain("delegate_to_reviewer");
   });
 
+  it("tells the orchestrator it cannot execute code and how to verify", () => {
+    const addendum = brainSystemAddendum(makeBrainState(config));
+
+    expect(addendum).toMatch(/cannot execute code/i);
+    expect(addendum).toContain("node");
+    expect(addendum).toMatch(/Quality gate|runs AUTOMATICALLY/i);
+    expect(addendum).toMatch(/Your loop:/);
+    expect(addendum).toMatch(/EMPIRICALLY/);
+  });
+
   it("says shell is fully removed when bash is not allowed", () => {
     const state = makeBrainState({ ...config, allowBash: false });
 

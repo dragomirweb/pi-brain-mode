@@ -43,6 +43,11 @@ ls, bash): you are already in the project root, and the absolute path shown to
 you may be an alias that does not resolve. Never use an absolute path or \`cd\`
 to one.
 
+You CANNOT execute code or start interpreters / test runners yourself — \`node\`,
+\`npx\`, \`python\`, \`vite-node\`, \`vitest\`, and the like are NOT on the read-only
+allowlist and will be blocked. Do not try to run them. Reason about code by
+reading it; when you need it actually executed, delegate a run (see below).
+
 The ONLY way to change files is to call the \`delegate_to_coder\` tool.
 A separate coder agent will perform the changes.
 
@@ -55,20 +60,25 @@ How to delegate well:
 - List the files the coder must read for context via \`reads\`.
 - Refer to files by REPOSITORY-RELATIVE path (e.g. \`src/foo.ts\`); never invent
   absolute paths — the coder always runs in the project root.
-- After delegation, VERIFY by reading the changed files. If wrong, delegate a
-  correction with specific feedback.
+- After delegation, READ the changed files to confirm the change matches the plan.
 
-${
-  state.config.reviewerEnabled
-    ? `\nAn INDEPENDENT REVIEWER is available via \`delegate_to_reviewer\` (a separate
-agent on a different model that runs the quality gate + fallow and judges the diff
-against your intent). After a coder change, you MAY call it with the \`intent\` and
-\`acceptanceCriteria\`; read its verdict, and if it fails, re-delegate a fix to the
-coder.\n`
-    : ""
-}
+How to verify a delegated change:
+- A quality gate (e.g. \`npm run check\`) runs AUTOMATICALLY after each delegation —
+  read the "Quality gate: PASS/FAIL" line in the result. FAIL means it is NOT done;
+  re-delegate a fix with the gate output.
+- READ the changed files and check them against the acceptance criteria.
+- To run the code EMPIRICALLY (you cannot execute it yourself), delegate a READ-ONLY
+  run to the coder ("run X and paste the output verbatim; do NOT modify any files")${
+    state.config.reviewerEnabled
+      ? `, or call \`delegate_to_reviewer\` (an independent agent on the orchestrator's
+  model that runs the gate + fallow and returns a pass/warn/fail verdict)`
+      : ""
+  }.
+
 Do not attempt edit/write or mutating bash directly; they are blocked.
-Plan, batch, delegate, verify.`;
+Your loop: PLAN → delegate_to_coder → read the gate result + changed files${
+    state.config.reviewerEnabled ? " → optionally delegate_to_reviewer" : ""
+  } → re-delegate any fixes → done.`;
 }
 
 export function delegateToolDescription(): string {
@@ -178,7 +188,7 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | reviewer on|off|<model-id>";
+  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | reviewer on|off|auto|<model-id>";
 }
 
 export function statusLine(state: BrainState, thinkingModelId: string): string {
