@@ -12,7 +12,14 @@ import type { Static } from "typebox";
 
 import { DelegateParams, delegateToolDescription, workerSystemPrompt } from "./prompts.ts";
 import { type BrainState, DELEGATE_TOOL } from "./state.ts";
-import { type WorkerDetails, isModelUnavailable, runSubagent, tail, toError } from "./subagent.ts";
+import {
+  type WorkerDetails,
+  WorkerTimeoutError,
+  isModelUnavailable,
+  runSubagent,
+  tail,
+  toError,
+} from "./subagent.ts";
 
 type DelegateParamsT = Static<typeof DelegateParams>;
 
@@ -51,10 +58,14 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
             signal,
             onUpdate,
             ctx.cwd,
+            state.config.workerTimeout,
           );
           const gate = await runGate(ctx.cwd, gateCommand, signal);
           return withGate(result, gate);
         } catch (err) {
+          if (err instanceof WorkerTimeoutError) {
+            return formatTimeoutResult(err, state.config.workerTimeout);
+          }
           lastErr = toError(err);
           if (!isModelUnavailable(lastErr)) throw lastErr;
         }
@@ -167,6 +178,37 @@ function withGate(
   return {
     ...result,
     content: [{ type: "text", text: `${existing}\n\n---\n${header}${body}` }],
+  };
+}
+
+function formatTimeoutResult(
+  err: WorkerTimeoutError,
+  timeoutMs: number,
+): AgentToolResult<WorkerDetails> {
+  const seconds = Math.round(timeoutMs / 1000);
+  const partial = err.partialResult;
+  const changedFiles = partial.details?.changedFiles ?? [];
+  const existingText =
+    partial.content?.[0]?.type === "text" ? (partial.content[0] as { text: string }).text : "";
+
+  const filesList =
+    changedFiles.length > 0
+      ? `\nFiles changed before timeout: ${changedFiles.join(", ")}`
+      : "\nNo files were changed before timeout.";
+
+  const progressSummary = existingText ? `\n\nPartial worker output:\n${existingText}` : "";
+
+  const text = `⚠️ **Worker timed out** after ${seconds}s.${filesList}${progressSummary}
+
+---
+The worker was killed after the ${seconds}s timeout. To continue:
+1. READ the files listed above to see what was completed.
+2. Delegate the REMAINING work in a smaller, focused follow-up task.
+3. If the full task is inherently large, increase the timeout with \`/brain timeout <seconds>\`.`;
+
+  return {
+    content: [{ type: "text", text }],
+    details: partial.details,
   };
 }
 

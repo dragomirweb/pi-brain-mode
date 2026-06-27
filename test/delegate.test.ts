@@ -20,6 +20,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
+  workerTimeout: 180_000,
 };
 
 class FakeChild extends EventEmitter {
@@ -181,11 +182,17 @@ describe("delegate_to_coder", () => {
     await expect(resultPromise).rejects.toThrow(/worker exploded/);
   });
 
-  it("times out, kills the child, and rejects", async () => {
-    setSpawnTimeoutMs(20);
+  it("times out, returns partial progress, and kills the child", async () => {
     const { tool, ctx } = makeRegisteredTool(true);
+    // Override config timeout to something tiny for the test
+    const state = createBrainState({ ...baseConfig, workerTimeout: 20 });
+    state.enabled = true;
+    const { pi: pi2, tools: tools2 } = makeMockPi({ cwd: "/tmp/cwd" });
+    registerDelegateTool(pi2, state);
+    const tool2 = tools2.get("delegate_to_coder");
+    if (!tool2) throw new Error("delegate_to_coder was not registered");
 
-    const resultPromise = tool.execute(
+    const resultPromise = tool2.execute(
       "call-1",
       { task: "change a file" },
       undefined,
@@ -193,8 +200,37 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
-    await expect(resultPromise).rejects.toThrow(/timed out/);
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Worker timed out");
+    expect(text).toContain("To continue");
     expect(children[0].kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("includes changed files in timeout partial progress", async () => {
+    const state = createBrainState({ ...baseConfig, workerTimeout: 50 });
+    state.enabled = true;
+    const { pi: pi2, tools: tools2 } = makeMockPi({ cwd: "/tmp/cwd" });
+    registerDelegateTool(pi2, state);
+    const tool2 = tools2.get("delegate_to_coder");
+    if (!tool2) throw new Error("delegate_to_coder was not registered");
+
+    const resultPromise = tool2.execute("call-1", { task: "change a file" }, undefined, undefined, {
+      cwd: "/tmp/cwd",
+    } as ExtensionContext);
+
+    // Simulate the worker editing a file before timeout hits
+    children[0].pushStdout({
+      type: "tool_execution_end",
+      toolName: "edit",
+      args: { path: "src/done.ts" },
+      isError: false,
+    });
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("src/done.ts");
+    expect((result.details as { changedFiles?: string[] })?.changedFiles).toContain("src/done.ts");
   });
 
   it("retries fallback models when the first model is unavailable", async () => {

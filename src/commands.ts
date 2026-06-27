@@ -118,6 +118,21 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
         return;
       }
+      if (verb === "timeout") {
+        if (value === "") {
+          ctx.ui.notify(msg.brainUsage(), "warning");
+          return;
+        }
+        const seconds = Number.parseInt(value, 10);
+        if (Number.isNaN(seconds) || seconds < 30) {
+          ctx.ui.notify("Timeout must be at least 30 seconds.", "error");
+          return;
+        }
+        state.config.workerTimeout = seconds * 1000;
+        persist(pi, state);
+        ctx.ui.notify(msg.timeoutSet(state), "info");
+        return;
+      }
       if (verb === "reviewer") {
         const sub = value.trim();
         const lowered = sub.toLowerCase();

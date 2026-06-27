@@ -5,6 +5,8 @@ import type { BrainConfig } from "./state.ts";
 const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
 const DEFAULT_REVIEWER_MODEL = "";
+const DEFAULT_WORKER_TIMEOUT = 180_000;
+const MIN_WORKER_TIMEOUT = 30_000;
 
 export const DEFAULT_CONFIG: BrainConfig = {
   workerModel: DEFAULT_WORKER_MODEL,
@@ -12,6 +14,7 @@ export const DEFAULT_CONFIG: BrainConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: DEFAULT_REVIEWER_MODEL,
+  workerTimeout: DEFAULT_WORKER_TIMEOUT,
 };
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
@@ -40,6 +43,10 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
     type: "string",
     description: "Reviewer model id (default: the orchestrator model).",
   });
+  pi.registerFlag("brain-worker-timeout", {
+    type: "string",
+    description: "Worker timeout in seconds (default: 180, minimum: 30).",
+  });
 }
 
 export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig {
@@ -53,6 +60,12 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
           .map((item) => item.trim())
           .filter(Boolean)
       : base.fallbackModels;
+
+  const timeoutFlag = pi.getFlag("brain-worker-timeout");
+  const parsedTimeout =
+    typeof timeoutFlag === "string" && timeoutFlag.length > 0
+      ? Math.max(Number.parseInt(timeoutFlag, 10) * 1000, MIN_WORKER_TIMEOUT)
+      : base.workerTimeout || DEFAULT_WORKER_TIMEOUT;
 
   return {
     ...base,
@@ -72,5 +85,6 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
       typeof reviewerModelFlag === "string" && reviewerModelFlag.length > 0
         ? reviewerModelFlag
         : base.reviewerModel || DEFAULT_REVIEWER_MODEL,
+    workerTimeout: Number.isNaN(parsedTimeout) ? DEFAULT_WORKER_TIMEOUT : parsedTimeout,
   };
 }

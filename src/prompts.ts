@@ -32,6 +32,7 @@ export function brainSystemAddendum(state: BrainState): string {
   const bashRule = state.config.allowBash
     ? "and run READ-ONLY shell commands (git log/diff/status, rg, find, cat, wc, jq, pipes of safe commands). You CANNOT edit or write files, and any MUTATING shell command (rm, mv, sed -i, >, npm install, git commit, …) is blocked — those go through delegation."
     : "but shell is fully removed; you have no shell at all, and all shell work is delegated. You CANNOT edit or write files; changes go through delegation.";
+  const timeoutLabel = `${Math.round(state.config.workerTimeout / 1000)}s`;
 
   return `## Brain Mode is ON
 
@@ -55,12 +56,25 @@ How to delegate well:
 - First understand the change: read the relevant files, form a concrete plan.
 - Hand the coder a COMPLETE, SPECIFIC \`task\` and a \`plan\` describing intent,
   affected files, and acceptance criteria. Vague tasks make the coder guess.
-- BATCH related edits into ONE delegation. Each delegation is a full worker
-  process — don't delegate trivial one-line changes individually.
+- BATCH related edits into ONE delegation — but keep each delegation FOCUSED
+  (roughly 2–5 files or one logical unit). Each delegation has a ${timeoutLabel}
+  timeout; oversized tasks will be killed mid-work.
 - List the files the coder must read for context via \`reads\`.
 - Refer to files by REPOSITORY-RELATIVE path (e.g. \`src/foo.ts\`); never invent
   absolute paths — the coder always runs in the project root.
 - After delegation, READ the changed files to confirm the change matches the plan.
+
+Splitting large work:
+- Each \`delegate_to_coder\` call has a **${timeoutLabel} timeout**. If the worker
+  is killed, you get a partial-progress report listing files already changed.
+- BEFORE delegating, estimate scope: if the change spans many files or involves
+  reading a lot of context, split proactively:
+  • **By file group**: one delegation per 2–5 closely related files.
+  • **By phase**: scaffolding/types → core logic → tests → wiring/cleanup.
+  • **By layer**: data model → business logic → API surface → UI.
+- If a delegation DOES time out, read the partial-progress report, check which
+  files were completed, then delegate the REMAINING work only.
+- You can adjust the timeout at runtime with \`/brain timeout <seconds>\`.
 
 How to verify a delegated change:
 - A quality gate (e.g. \`npm run check\`) runs AUTOMATICALLY after each delegation —
@@ -188,7 +202,7 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | reviewer on|off|auto|<model-id>";
+  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | timeout <seconds> | reviewer on|off|auto|<model-id>";
 }
 
 export function statusLine(state: BrainState, thinkingModelId: string): string {
@@ -200,10 +214,12 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
   const reviewerModelLabel = state.config.reviewerModel || `${thinkingModelId} (orchestrator)`;
   const reviewerMode = state.config.reviewerEnabled ? `ON (${reviewerModelLabel})` : "OFF";
+  const timeoutSeconds = Math.round(state.config.workerTimeout / 1000);
 
   return `Brain Mode: ${mode}
 Thinking model: ${thinkingModelId}
 Worker model: ${state.config.workerModel}${fallbackSuffix}
+Worker timeout: ${timeoutSeconds}s
 Reviewer: ${reviewerMode}
 Orchestrator bash: ${bashMode}`;
 }
@@ -223,6 +239,10 @@ export function reviewerSet(state: BrainState): string {
 
 export function reviewerModelSet(state: BrainState): string {
   return `Reviewer model set: ${state.config.reviewerModel || "orchestrator model (auto)"}.`;
+}
+
+export function timeoutSet(state: BrainState): string {
+  return `Worker timeout set: ${Math.round(state.config.workerTimeout / 1000)}s.`;
 }
 
 export function thinkingModelSet(id: string): string {

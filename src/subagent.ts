@@ -24,6 +24,18 @@ type JsonObject = Record<string, unknown>;
 
 let spawnTimeoutMs = 180_000;
 
+export class WorkerTimeoutError extends Error {
+  readonly partialResult: AgentToolResult<WorkerDetails>;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number, partialResult: AgentToolResult<WorkerDetails>) {
+    super(`delegate_to_coder timed out after ${timeoutMs}ms.`);
+    this.name = "WorkerTimeoutError";
+    this.timeoutMs = timeoutMs;
+    this.partialResult = partialResult;
+  }
+}
+
 export function setSpawnTimeoutMs(ms: number): void {
   spawnTimeoutMs = ms;
 }
@@ -36,7 +48,9 @@ export async function runSubagent(
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<WorkerDetails> | undefined,
   cwd: string,
+  timeoutMs?: number,
 ): Promise<AgentToolResult<WorkerDetails>> {
+  const effectiveTimeout = timeoutMs && timeoutMs > 0 ? timeoutMs : spawnTimeoutMs;
   const { file: sysPromptFile, dir: sysPromptDir } = writeSystemPrompt(systemPromptText);
   const { command, args } = getPiInvocation(buildArgs(model, sysPromptFile, task, tools));
 
@@ -135,12 +149,13 @@ export async function runSubagent(
           finish(() => {
             killWorker();
             reject(
-              new Error(
-                `delegate_to_coder timed out after ${spawnTimeoutMs}ms. Split the task or retry.`,
+              new WorkerTimeoutError(
+                effectiveTimeout,
+                formatWorkerResult(messages, usage, toolEvents),
               ),
             );
           }),
-        spawnTimeoutMs,
+        effectiveTimeout,
       );
 
       signal?.addEventListener("abort", onAbort, { once: true });
