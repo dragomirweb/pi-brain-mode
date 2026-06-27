@@ -62,7 +62,7 @@ const DESTRUCTIVE: RegExp[] = [
   /^(chmod|chown|chgrp|mount|umount|kill|pkill|systemctl|service|shutdown|reboot|mkfs)\b/,
   /^(bash|sh)\s+-c\b/,
   /^(mkdir|touch)\b/,
-  /^find\b.*(?:^|\s)-(delete|exec|execdir|fprint|fprintf|fls|ok|okdir)(?:\s|$)/,
+  /^find\b.*(?:^|\s)-(delete|exec|execdir|fprint|fprint0|fprintf|fls|ok|okdir)(?:\s|$)/,
 ];
 
 const OPAQUE: RegExp[] = [
@@ -246,9 +246,17 @@ function isAllowlisted(segment: string): boolean {
   if (SAFE_SIMPLE_HEADS.has(head)) {
     if (head === "find") {
       return !tokens.some((token) =>
-        ["-delete", "-exec", "-execdir", "-fprint", "-fprintf", "-fls", "-ok", "-okdir"].includes(
-          token,
-        ),
+        [
+          "-delete",
+          "-exec",
+          "-execdir",
+          "-fprint",
+          "-fprint0",
+          "-fprintf",
+          "-fls",
+          "-ok",
+          "-okdir",
+        ].includes(token),
       );
     }
     if (head === "sed") {
