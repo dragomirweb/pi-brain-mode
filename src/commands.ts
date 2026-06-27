@@ -130,6 +130,12 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           ctx.ui.notify(msg.reviewerSet(state), "info");
           return;
         }
+        if (lowered === "auto") {
+          state.config.reviewerModel = "";
+          persist(pi, state);
+          ctx.ui.notify(msg.reviewerModelSet(state), "info");
+          return;
+        }
         const resolved = resolveModel(ctx.modelRegistry, sub);
         if (!resolved) {
           ctx.ui.notify(msg.unknownModel(sub), "error");

@@ -4,7 +4,7 @@ import type { BrainConfig } from "./state.ts";
 
 const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
-const DEFAULT_REVIEWER_MODEL = "claude-opus-4-8";
+const DEFAULT_REVIEWER_MODEL = "";
 
 export const DEFAULT_CONFIG: BrainConfig = {
   workerModel: DEFAULT_WORKER_MODEL,

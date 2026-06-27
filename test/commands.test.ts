@@ -150,6 +150,17 @@ describe("/brain model configuration commands", () => {
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
 
+  it("/brain reviewer auto resets the reviewer model", async () => {
+    const { brain, ctx, state, entries, notifications } = setup();
+    state.config.reviewerModel = "claude/opus-4-8";
+
+    await brain.handler("reviewer auto", ctx);
+
+    expect(state.config.reviewerModel).toBe("");
+    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
+    expect(notifications.at(-1)).toMatchObject({ type: "info" });
+  });
+
   it("rejects an unknown reviewer model without mutating or persisting", async () => {
     const { brain, ctx, state, entries, notifications } = setup();
     state.config.reviewerModel = "existing/model";

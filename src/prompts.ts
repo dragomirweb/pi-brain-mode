@@ -188,7 +188,8 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
       ? ` (fallbacks: ${state.config.fallbackModels.join(", ")})`
       : "";
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
-  const reviewerMode = state.config.reviewerEnabled ? `ON (${state.config.reviewerModel})` : "OFF";
+  const reviewerModelLabel = state.config.reviewerModel || `${thinkingModelId} (orchestrator)`;
+  const reviewerMode = state.config.reviewerEnabled ? `ON (${reviewerModelLabel})` : "OFF";
 
   return `Brain Mode: ${mode}
 Thinking model: ${thinkingModelId}
@@ -206,13 +207,12 @@ export function fallbackSet(state: BrainState): string {
 }
 
 export function reviewerSet(state: BrainState): string {
-  return state.config.reviewerEnabled
-    ? `Reviewer ON (model: ${state.config.reviewerModel}).`
-    : "Reviewer OFF.";
+  if (!state.config.reviewerEnabled) return "Reviewer OFF.";
+  return `Reviewer ON (model: ${state.config.reviewerModel || "orchestrator model (auto)"}).`;
 }
 
 export function reviewerModelSet(state: BrainState): string {
-  return `Reviewer model set: ${state.config.reviewerModel}.`;
+  return `Reviewer model set: ${state.config.reviewerModel || "orchestrator model (auto)"}.`;
 }
 
 export function thinkingModelSet(id: string): string {

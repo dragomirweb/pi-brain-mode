@@ -127,6 +127,55 @@ describe("delegate_to_reviewer", () => {
     expect(call.options.env?.PI_BRAIN_WORKER).toBe("1");
   });
 
+  it("defaults to the orchestrator model when reviewerModel is empty", async () => {
+    const { tool, ctx } = makeRegisteredReviewer(true, true, "/tmp/project", "", {
+      provider: "anthropic",
+      id: "claude-opus-4-8",
+    });
+
+    const resultPromise = tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: pass" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await expect(resultPromise).resolves.toBeDefined();
+
+    const call = spawnCalls[0];
+    expect(call.args.at(call.args.indexOf("--model") + 1)).toBe("anthropic/claude-opus-4-8");
+  });
+
+  it("falls back to the worker model when reviewerModel is empty and no orchestrator model", async () => {
+    const { tool, ctx } = makeRegisteredReviewer(true, true, "/tmp/project", "");
+
+    const resultPromise = tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: pass" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await expect(resultPromise).resolves.toBeDefined();
+
+    const call = spawnCalls[0];
+    expect(call.args.at(call.args.indexOf("--model") + 1)).toBe("openai-codex/gpt-5.5");
+  });
+
   it("includes the intent in the task argument", async () => {
     const { tool, ctx } = makeRegisteredReviewer(true, true);
 
@@ -158,14 +207,20 @@ describe("delegate_to_reviewer", () => {
   });
 });
 
-function makeRegisteredReviewer(enabled: boolean, reviewerEnabled: boolean, cwd = "/tmp/cwd") {
+function makeRegisteredReviewer(
+  enabled: boolean,
+  reviewerEnabled: boolean,
+  cwd = "/tmp/cwd",
+  reviewerModel: string = baseConfig.reviewerModel,
+  model?: { provider: string; id: string },
+) {
   const { pi, tools } = makeMockPi({ cwd });
-  const state = createBrainState({ ...baseConfig, reviewerEnabled });
+  const state = createBrainState({ ...baseConfig, reviewerEnabled, reviewerModel });
   state.enabled = enabled;
   registerReviewerTool(pi, state);
 
   const tool = tools.get("delegate_to_reviewer");
   if (!tool) throw new Error("delegate_to_reviewer was not registered");
 
-  return { tool, ctx: { cwd } as ExtensionContext };
+  return { tool, ctx: { cwd, model } as unknown as ExtensionContext };
 }

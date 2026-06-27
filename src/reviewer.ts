@@ -35,8 +35,12 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
       if (!state.config.reviewerEnabled) {
         throw new Error("Reviewer is off. Enable it with /brain reviewer on.");
       }
+      const reviewerModel =
+        state.config.reviewerModel.trim() ||
+        (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "") ||
+        state.config.workerModel;
       return runSubagent(
-        state.config.reviewerModel,
+        reviewerModel,
         reviewerSystemPrompt(),
         assembleReviewTask(params),
         "read,edit,write,bash",
