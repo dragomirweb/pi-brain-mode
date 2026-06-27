@@ -4,11 +4,14 @@ import type { BrainConfig } from "./state.ts";
 
 const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
+const DEFAULT_REVIEWER_MODEL = "claude-opus-4-8";
 
 export const DEFAULT_CONFIG: BrainConfig = {
   workerModel: DEFAULT_WORKER_MODEL,
   fallbackModels: [...DEFAULT_FALLBACK_MODELS],
   allowBash: true,
+  reviewerEnabled: false,
+  reviewerModel: DEFAULT_REVIEWER_MODEL,
 };
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
@@ -29,11 +32,20 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
     description:
       "Post-delegation quality gate command (default: auto-detect `npm run check`; `off` to disable).",
   });
+  pi.registerFlag("brain-reviewer", {
+    type: "boolean",
+    description: "Enable the reviewer subagent (delegate_to_reviewer).",
+  });
+  pi.registerFlag("brain-reviewer-model", {
+    type: "string",
+    description: "Reviewer model id (default: claude-opus-4-8).",
+  });
 }
 
 export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig {
   const modelFlag = pi.getFlag("brain-worker-model");
   const fallbackFlag = pi.getFlag("brain-worker-fallback");
+  const reviewerModelFlag = pi.getFlag("brain-reviewer-model");
   const fallbackModels =
     typeof fallbackFlag === "string" && fallbackFlag.length > 0
       ? fallbackFlag
@@ -50,5 +62,15 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
         : base.workerModel || DEFAULT_WORKER_MODEL,
     fallbackModels,
     allowBash: pi.getFlag("brain-no-bash") === true ? false : base.allowBash,
+    reviewerEnabled:
+      pi.getFlag("brain-reviewer") === true
+        ? true
+        : typeof base.reviewerEnabled === "boolean"
+          ? base.reviewerEnabled
+          : false,
+    reviewerModel:
+      typeof reviewerModelFlag === "string" && reviewerModelFlag.length > 0
+        ? reviewerModelFlag
+        : base.reviewerModel || DEFAULT_REVIEWER_MODEL,
   };
 }

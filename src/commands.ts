@@ -118,6 +118,28 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
         return;
       }
+      if (verb === "reviewer") {
+        const sub = value.trim();
+        const lowered = sub.toLowerCase();
+        if (sub === "") {
+          ctx.ui.notify(msg.brainUsage(), "warning");
+          return;
+        }
+        if (lowered === "on" || lowered === "off") {
+          setReviewerEnabled(pi, state, lowered === "on");
+          ctx.ui.notify(msg.reviewerSet(state), "info");
+          return;
+        }
+        const resolved = resolveModel(ctx.modelRegistry, sub);
+        if (!resolved) {
+          ctx.ui.notify(msg.unknownModel(sub), "error");
+          return;
+        }
+        state.config.reviewerModel = canonicalModelId(resolved);
+        persist(pi, state);
+        ctx.ui.notify(msg.reviewerModelSet(state), "info");
+        return;
+      }
       if (verb === "help") {
         ctx.ui.notify(msg.brainUsage(), "info");
         return;
@@ -138,5 +160,14 @@ export function enable(pi: ExtensionAPI, state: BrainState): void {
 function disable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = false;
   pi.setActiveTools(state.fullTools ?? ["read", "bash", "edit", "write"]);
+  persist(pi, state);
+}
+
+function setReviewerEnabled(pi: ExtensionAPI, state: BrainState, on: boolean): void {
+  state.config.reviewerEnabled = on;
+  if (state.enabled) {
+    const known = pi.getAllTools().map((tool) => tool.name);
+    pi.setActiveTools(applicableToolset(known, state.config));
+  }
   persist(pi, state);
 }

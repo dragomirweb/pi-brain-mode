@@ -11,6 +11,8 @@ const config = {
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
+  reviewerEnabled: false,
+  reviewerModel: "claude-opus-4-8",
 };
 
 describe("prompts", () => {
@@ -71,6 +73,17 @@ describe("prompts", () => {
     expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain("claude-opus-4-8");
     expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain(
       "Orchestrator bash: gated (read-only)",
+    );
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain("Reviewer: OFF");
+
+    const withReviewer = makeBrainState({
+      ...config,
+      reviewerEnabled: true,
+      reviewerModel: "claude-opus-4-8",
+    });
+    withReviewer.enabled = true;
+    expect(statusLine(withReviewer, "openai-codex/gpt-5.5")).toContain(
+      "Reviewer: ON (claude-opus-4-8)",
     );
 
     const noBash = makeBrainState({ ...config, allowBash: false });

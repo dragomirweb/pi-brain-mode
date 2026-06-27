@@ -4,13 +4,15 @@ import { enable, registerBrainCommand } from "../src/commands.ts";
 import { registerBrainFlags, resolveConfig } from "../src/config.ts";
 import { registerDelegateTool } from "../src/delegate.ts";
 import { registerBrainEvents } from "../src/events.ts";
-import { PERSIST_KEY, createBrainState, orchestratorToolset } from "../src/state.ts";
+import { PERSIST_KEY, REVIEWER_TOOL, createBrainState, orchestratorToolset } from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 const baseConfig = {
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
+  reviewerEnabled: false,
+  reviewerModel: "claude-opus-4-8",
 };
 
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];
@@ -43,6 +45,13 @@ describe("brain state machine", () => {
 
     expect(setActiveToolsCalls.at(-1)).toEqual(["read", "grep", "find", "ls"]);
     expect(setActiveToolsCalls.at(-1)).not.toContain("bash");
+  });
+
+  it("includes delegate_to_reviewer in orchestratorToolset only when reviewer is enabled", () => {
+    expect(orchestratorToolset({ ...baseConfig, reviewerEnabled: true })).toContain(REVIEWER_TOOL);
+    expect(orchestratorToolset({ ...baseConfig, reviewerEnabled: false })).not.toContain(
+      REVIEWER_TOOL,
+    );
   });
 
   it("keeps delegate_to_coder active in the orchestrator toolset when enabled", () => {

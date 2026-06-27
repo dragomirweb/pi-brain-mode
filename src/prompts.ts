@@ -103,7 +103,7 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none>";
+  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | reviewer on|off|<model-id>";
 }
 
 export function statusLine(state: BrainState, thinkingModelId: string): string {
@@ -113,10 +113,12 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
       ? ` (fallbacks: ${state.config.fallbackModels.join(", ")})`
       : "";
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
+  const reviewerMode = state.config.reviewerEnabled ? `ON (${state.config.reviewerModel})` : "OFF";
 
   return `Brain Mode: ${mode}
 Thinking model: ${thinkingModelId}
 Worker model: ${state.config.workerModel}${fallbackSuffix}
+Reviewer: ${reviewerMode}
 Orchestrator bash: ${bashMode}`;
 }
 
@@ -126,6 +128,16 @@ export function workerModelSet(state: BrainState): string {
 
 export function fallbackSet(state: BrainState): string {
   return `Worker fallback chain: ${fallbackText(state)}.`;
+}
+
+export function reviewerSet(state: BrainState): string {
+  return state.config.reviewerEnabled
+    ? `Reviewer ON (model: ${state.config.reviewerModel}).`
+    : "Reviewer OFF.";
+}
+
+export function reviewerModelSet(state: BrainState): string {
+  return `Reviewer model set: ${state.config.reviewerModel}.`;
 }
 
 export function thinkingModelSet(id: string): string {

@@ -17,6 +17,8 @@ const baseConfig = {
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
+  reviewerEnabled: false,
+  reviewerModel: "claude-opus-4-8",
 };
 
 class FakeChild extends EventEmitter {

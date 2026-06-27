@@ -8,6 +8,8 @@ const baseConfig = {
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude/opus-4-8"],
   allowBash: true,
+  reviewerEnabled: false,
+  reviewerModel: "claude-opus-4-8",
 };
 
 const defaultModels = [
@@ -115,6 +117,57 @@ describe("/brain model configuration commands", () => {
     expect(message).toContain("Worker model: openai-codex/gpt-5.5");
     expect(message).toContain("claude/opus-4-8");
   });
+
+  it("enables the reviewer and persists", async () => {
+    const { brain, ctx, state, entries, notifications } = setup();
+
+    await brain.handler("reviewer on", ctx);
+
+    expect(state.config.reviewerEnabled).toBe(true);
+    expect(entries.at(-1)).toMatchObject({
+      customType: PERSIST_KEY,
+      data: { v: 1, config: { reviewerEnabled: true } },
+    });
+    expect(notifications.at(-1)).toMatchObject({ type: "info" });
+  });
+
+  it("disables the reviewer", async () => {
+    const { brain, ctx, state } = setup();
+    state.config.reviewerEnabled = true;
+
+    await brain.handler("reviewer off", ctx);
+
+    expect(state.config.reviewerEnabled).toBe(false);
+  });
+
+  it("sets and persists the reviewer model", async () => {
+    const { brain, ctx, state, entries, notifications } = setup();
+
+    await brain.handler("reviewer claude/opus-4-8", ctx);
+
+    expect(state.config.reviewerModel).toBe("claude/opus-4-8");
+    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
+    expect(notifications.at(-1)).toMatchObject({ type: "info" });
+  });
+
+  it("rejects an unknown reviewer model without mutating or persisting", async () => {
+    const { brain, ctx, state, entries, notifications } = setup();
+    state.config.reviewerModel = "existing/model";
+
+    await brain.handler("reviewer bogus/x", ctx);
+
+    expect(state.config.reviewerModel).toBe("existing/model");
+    expect(entries.filter((entry) => entry.customType === PERSIST_KEY)).toHaveLength(0);
+    expect(notifications.at(-1)).toMatchObject({ type: "error" });
+  });
+
+  it("includes the reviewer line in status", async () => {
+    const { brain, ctx, notifications } = setup();
+
+    await brain.handler("status", ctx);
+
+    expect(notifications.at(-1)?.msg ?? "").toContain("Reviewer:");
+  });
 });
 
 type SetupOptions = Parameters<typeof makeMockPi>[0];
@@ -125,6 +178,8 @@ function setup(opts?: SetupOptions) {
     workerModel: baseConfig.workerModel,
     fallbackModels: [...baseConfig.fallbackModels],
     allowBash: baseConfig.allowBash,
+    reviewerEnabled: baseConfig.reviewerEnabled,
+    reviewerModel: baseConfig.reviewerModel,
   });
   registerBrainCommand(mock.pi, state);
   const brain = mock.commands.get("brain");
