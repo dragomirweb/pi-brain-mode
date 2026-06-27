@@ -36,6 +36,13 @@ describe("prompts", () => {
     expect(addendum).toMatch(/absolute path/i);
   });
 
+  it("mentions the reviewer only when it is enabled", () => {
+    expect(brainSystemAddendum(makeBrainState(config))).not.toContain("delegate_to_reviewer");
+
+    const withReviewer = makeBrainState({ ...config, reviewerEnabled: true });
+    expect(brainSystemAddendum(withReviewer)).toContain("delegate_to_reviewer");
+  });
+
   it("says shell is fully removed when bash is not allowed", () => {
     const state = makeBrainState({ ...config, allowBash: false });
 

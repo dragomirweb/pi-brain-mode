@@ -38,9 +38,17 @@ Use the `/brain` command:
 /brain worker <id>
 /brain thinking <id>
 /brain fallback <id[,id]|none>
+/brain reviewer on|off
+/brain reviewer <id>
 ```
 
 `/brain worker <id>` and `/brain fallback <id[,id]|none>` update the persisted worker model and fallback chain for future delegations. `/brain thinking <id>` switches the orchestrator model for the current session only; it is a one-shot switch and is not persisted. Unknown model names are rejected; use `provider/model-id` or a unique bare model id from `pi --list-models`.
+
+## Reviewer
+
+`/brain reviewer on|off` toggles an independent reviewer, and `/brain reviewer <model-id>` sets the reviewer model (default `claude-opus-4-8`, deliberately a different model than the worker). The same controls are available at launch via the `--brain-reviewer` and `--brain-reviewer-model <model>` flags.
+
+When the reviewer is enabled, the orchestrator gains a `delegate_to_reviewer` tool. It spawns a fresh `pi` subagent on the reviewer model that inspects the coder's diff, independently runs the project quality gate (and `fallow audit` if installed), judges the change against the stated `intent`/`acceptanceCriteria`, applies only trivial mechanical fixes itself, and returns a structured verdict (pass/warn/fail) plus findings. Use it after `delegate_to_coder` for a second opinion; if the verdict fails, re-delegate a fix to the coder with the findings.
 
 When Brain Mode is on, `edit` and `write` are removed from the main agent. `bash` stays available by default, but it is gated to read/search-style commands; mutating or opaque shell commands are blocked and should be delegated. The main implementation path is `delegate_to_coder`, where the brain sends a scoped task to a coder worker.
 
@@ -51,6 +59,8 @@ Recommended workflow: plan the change, batch related implementation work into a 
 - `--brain-worker-model <model>`: primary worker model. Defaults to `openai-codex/gpt-5.5`.
 - `--brain-worker-fallback <model[,model...]>`: fallback worker model list. Defaults to `claude-opus-4-8`.
 - `--brain-no-bash`: hard-removes `bash` from the brain toolset. Without this flag, `bash` is kept and gated.
+- `--brain-reviewer`: enables the reviewer subagent (`delegate_to_reviewer`).
+- `--brain-reviewer-model <model>`: reviewer model id. Defaults to `claude-opus-4-8`, a different model than the worker.
 
 ## How it works
 

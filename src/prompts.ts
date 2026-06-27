@@ -14,6 +14,20 @@ export const DelegateParams = Type.Object({
   ),
 });
 
+export const ReviewParams = Type.Object({
+  intent: Type.String({
+    description: "What the coder's change was supposed to accomplish (the original task).",
+  }),
+  acceptanceCriteria: Type.Optional(
+    Type.String({ description: "Concrete criteria the change must meet." }),
+  ),
+  focus: Type.Optional(Type.String({ description: "Specific things to scrutinize." })),
+  base: Type.Optional(
+    Type.String({ description: "Git ref to diff against (default: current uncommitted changes)." }),
+  ),
+  reads: Type.Optional(Type.Array(Type.String(), { description: "Extra context paths." })),
+});
+
 export function brainSystemAddendum(state: BrainState): string {
   const bashRule = state.config.allowBash
     ? "and run READ-ONLY shell commands (git log/diff/status, rg, find, cat, wc, jq, pipes of safe commands). You CANNOT edit or write files, and any MUTATING shell command (rm, mv, sed -i, >, npm install, git commit, …) is blocked — those go through delegation."
@@ -44,6 +58,15 @@ How to delegate well:
 - After delegation, VERIFY by reading the changed files. If wrong, delegate a
   correction with specific feedback.
 
+${
+  state.config.reviewerEnabled
+    ? `\nAn INDEPENDENT REVIEWER is available via \`delegate_to_reviewer\` (a separate
+agent on a different model that runs the quality gate + fallow and judges the diff
+against your intent). After a coder change, you MAY call it with the \`intent\` and
+\`acceptanceCriteria\`; read its verdict, and if it fails, re-delegate a fix to the
+coder.\n`
+    : ""
+}
 Do not attempt edit/write or mutating bash directly; they are blocked.
 Plan, batch, delegate, verify.`;
 }
@@ -68,6 +91,58 @@ failure). After it returns, READ the changed files to verify.`;
 
 export function delegateToolParameters() {
   return DelegateParams;
+}
+
+export function reviewToolDescription(): string {
+  return `Delegate an INDEPENDENT review of the coder's changes to a reviewer subagent
+(a separate \`pi\` agent on a different model that can read, run the quality gate
+and tests, and run fallow). Use it AFTER delegate_to_coder when you want a second
+opinion or deeper verification than reading the diff yourself.
+
+Provide:
+- \`intent\`: what the change was supposed to accomplish (the original task).
+- \`acceptanceCriteria\`: (recommended) the concrete criteria the change must meet.
+- \`focus\`: (optional) specific things to scrutinize.
+- \`base\`: (optional) git ref to diff against (default: current uncommitted changes).
+- \`reads\`: (optional) extra context paths.
+
+The reviewer runs the project quality gate + fallow (if present), judges the diff
+against the criteria, may apply only trivial mechanical fixes, and returns a
+structured verdict (pass/warn/fail) + findings. Read the verdict; if it fails,
+re-delegate a fix to the coder with the findings.`;
+}
+
+export function reviewerSystemPrompt(): string {
+  return `You are an independent CODE REVIEWER. Another agent (the coder) just made changes;
+a separate orchestrator has asked you to review them. You did NOT write this code —
+evaluate it skeptically against the stated intent and acceptance criteria. Do not
+trust any prior summary; re-derive correctness from the diff and the spec.
+
+Steps:
+1. Inspect the change: run \`git status\` and \`git diff\` (and \`git diff <base>\` if a
+   base ref is given) to see EXACTLY what changed.
+2. Run the project's quality gate and report the REAL result: prefer \`npm run check\`;
+   otherwise run whatever lint/typecheck/test scripts exist (see package.json). Paste
+   the actual pass/fail.
+3. If \`fallow\` is available (check \`node_modules/.bin/fallow\`, then \`fallow\` on PATH,
+   then \`npx --no-install fallow\`), run \`fallow audit\` on the changed code and fold its
+   findings in. If fallow is not present, skip it silently — it is optional.
+4. Judge the diff against the intent + acceptance criteria. Look specifically for:
+   missed or oversimplified requirements, unhandled edge cases, scope creep (changes
+   beyond the task), unintended coupling (e.g. a permanent test importing a throwaway
+   file), security issues, and maintainability problems.
+
+You MAY apply ONLY trivial, mechanical fixes yourself — lint auto-fixes, formatting,
+import ordering, obvious typos — and you MUST list exactly what you changed. You MUST
+NOT change logic, behavior, or design, rewrite the implementation, or "fix" anything
+substantive; those become findings for the coder.
+
+End with a structured verdict, exactly:
+VERDICT: pass | warn | fail
+GATE: <pass/fail + one line>
+FINDINGS: a list of \`file:line — severity — issue\` (or "none")
+FIXED: what you mechanically fixed (or "nothing")
+Keep it concise and evidence-based.`;
 }
 
 export function workerSystemPrompt(): string {

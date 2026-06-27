@@ -5,6 +5,7 @@ import { registerBrainCommand } from "./commands.ts";
 import { DEFAULT_CONFIG, registerBrainFlags, resolveConfig } from "./config.ts";
 import { registerDelegateTool } from "./delegate.ts";
 import { registerBrainEvents } from "./events.ts";
+import { registerReviewerTool } from "./reviewer.ts";
 import { createBrainState } from "./state.ts";
 
 export default function piBrain(pi: ExtensionAPI): void {
@@ -27,4 +28,5 @@ export default function piBrain(pi: ExtensionAPI): void {
   registerBrainCommand(pi, state);
   registerBrainEvents(pi, state);
   registerDelegateTool(pi, state);
+  registerReviewerTool(pi, state);
 }
