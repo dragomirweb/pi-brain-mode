@@ -1,0 +1,44 @@
+{
+  "name": "pi-brain-mode",
+  "version": "0.0.0",
+  "description": "Brain Mode for Pi: a hard-enforced orchestrator-worker split. The main agent plans, reads, and runs read-only shell; all file mutations are delegated to a coder worker.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dan <dan@dragomirweb.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dragomirweb/pi-brain-mode.git"
+  },
+  "homepage": "https://github.com/dragomirweb/pi-brain-mode#readme",
+  "bugs": {
+    "url": "https://github.com/dragomirweb/pi-brain-mode/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "orchestrator", "subagents", "brain-mode"],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "files": ["src/", "README.md", "CHANGELOG.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "biome check . && tsc --noEmit && vitest run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.2",
+    "typebox": "*",
+    "@types/node": "^22.0.0",
+    "@biomejs/biome": "^1.9.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
