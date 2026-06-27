@@ -100,12 +100,33 @@ async function runWorker(
       let settled = false;
       let buffer = "";
 
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+
       const proc = spawn(command, args, {
         cwd,
         env: { ...process.env, PI_BRAIN_WORKER: "1" },
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
+
+      const killWorker = () => {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          // already gone
+        }
+        killTimer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+        }, 2_000);
+        killTimer.unref?.();
+        proc.once("exit", () => {
+          if (killTimer) clearTimeout(killTimer);
+        });
+      };
 
       const cleanup = () => {
         clearTimeout(timer);
@@ -153,22 +174,14 @@ async function runWorker(
 
       const onAbort = () =>
         finish(() => {
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            // Ignore best-effort kill failures; the tool is already settling as aborted.
-          }
+          killWorker();
           reject(new Error("delegate_to_coder aborted."));
         });
 
       const timer = setTimeout(
         () =>
           finish(() => {
-            try {
-              proc.kill("SIGTERM");
-            } catch {
-              // Ignore best-effort kill failures; the timeout is the primary failure.
-            }
+            killWorker();
             reject(
               new Error(
                 `delegate_to_coder timed out after ${spawnTimeoutMs}ms. Split the task or retry.`,
@@ -200,6 +213,7 @@ async function runWorker(
 
       proc.on("close", (code) =>
         finish(() => {
+          if (killTimer) clearTimeout(killTimer);
           if (buffer.trim()) processLine(buffer);
           resolve(code ?? 0);
         }),
@@ -216,6 +230,10 @@ async function runWorker(
 
     if (messages.length === 0 && isModelUnavailable(new Error(stderr))) {
       throw new Error(`model-unavailable: ${tail(stderr, 300)}`);
+    }
+
+    if (messages.length === 0 && toolEvents.length === 0) {
+      throw new Error(`Worker produced no output (exit 0). ${tail(stderr, 300) || "(no stderr)"}`);
     }
 
     return formatWorkerResult(messages, usage, toolEvents);
@@ -428,5 +446,17 @@ function toError(value: unknown): Error {
 }
 
 function isModelUnavailable(err: Error): boolean {
-  return /model|not found|unauthorized|no api key|provider|unknown model/i.test(err.message);
+  const m = err.message;
+  return (
+    /\b(no api key|missing api key|invalid api key|unauthorized|authentication failed|401|403)\b/i.test(
+      m,
+    ) ||
+    /\b(unknown|invalid|unsupported|unavailable)\s+model\b/i.test(m) ||
+    /\bmodel\b[^.]*\b(not found|not available|unavailable|does not exist|is not configured)\b/i.test(
+      m,
+    ) ||
+    /\bno models?\s+available\b/i.test(m) ||
+    /\bprovider\b[^.]*\b(not found|not configured|unavailable|unknown)\b/i.test(m) ||
+    /\bmodel-unavailable\b/i.test(m)
+  );
 }

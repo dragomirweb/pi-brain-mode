@@ -22,7 +22,10 @@ const baseConfig = {
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
-  readonly kill = vi.fn();
+  readonly kill = vi.fn((signal?: string) => {
+    queueMicrotask(() => this.emit("exit", signal === "SIGKILL" ? 137 : null, signal ?? null));
+    return true;
+  });
 
   pushStdout(value: unknown): void {
     const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -222,6 +225,40 @@ describe("delegate_to_coder", () => {
     });
     expect(modelArg(spawnCalls[0].args)).toBe(baseConfig.workerModel);
     expect(modelArg(spawnCalls[1].args)).toBe(baseConfig.fallbackModels[0]);
+  });
+
+  it("does not retry fallback on a generic (non-model) error", async () => {
+    const { tool, ctx } = makeRegisteredTool(true);
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "change a file" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    children[0].pushStderr("panic: nil pointer in provider plugin");
+    children[0].close(1);
+
+    await expect(resultPromise).rejects.toThrow();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(children).toHaveLength(1);
+  });
+
+  it("throws when the worker produces no output", async () => {
+    const { tool, ctx } = makeRegisteredTool(true);
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "change a file" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    children[0].close(0);
+
+    await expect(resultPromise).rejects.toThrow(/no output/i);
   });
 
   it("aborts, kills the child, and rejects", async () => {
