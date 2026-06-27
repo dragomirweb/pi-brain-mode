@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { enable, registerBrainCommand } from "../src/commands.ts";
 import { registerBrainFlags, resolveConfig } from "../src/config.ts";
+import { registerDelegateTool } from "../src/delegate.ts";
 import { registerBrainEvents } from "../src/events.ts";
 import { PERSIST_KEY, createBrainState, orchestratorToolset } from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
@@ -44,6 +45,16 @@ describe("brain state machine", () => {
     expect(setActiveToolsCalls.at(-1)).not.toContain("bash");
   });
 
+  it("keeps delegate_to_coder active in the orchestrator toolset when enabled", () => {
+    const { pi, setActiveToolsCalls } = makeMockPi();
+    const state = createBrainState(baseConfig);
+    registerDelegateTool(pi, state);
+
+    enable(pi, state);
+
+    expect(setActiveToolsCalls.at(-1)).toContain("delegate_to_coder");
+  });
+
   it("disable restores captured fullTools instead of a hardcoded default", async () => {
     const initialTools = ["read", "bash", "edit", "write", "custom"];
     const { pi, ctx, commands, setActiveToolsCalls } = makeMockPi({ initialTools });
@@ -65,6 +76,7 @@ describe("brain state machine", () => {
       const { pi, entries, setActiveToolsCalls, dispatch } = makeMockPi();
       const state = createBrainState(baseConfig);
       registerBrainEvents(pi, state);
+      registerDelegateTool(pi, state);
       pi.appendEntry(PERSIST_KEY, { v: 1, enabled: true, config: baseConfig });
 
       await dispatch("session_start", { reason });

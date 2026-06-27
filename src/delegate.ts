@@ -12,7 +12,7 @@ import type {
 import type { Static } from "typebox";
 
 import { DelegateParams, delegateToolDescription, workerSystemPrompt } from "./prompts.ts";
-import type { BrainState } from "./state.ts";
+import { type BrainState, DELEGATE_TOOL } from "./state.ts";
 
 type DelegateParamsT = Static<typeof DelegateParams>;
 
@@ -41,7 +41,7 @@ export function setSpawnTimeoutMs(ms: number): void {
 
 export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void {
   pi.registerTool({
-    name: "delegate_to_coder",
+    name: DELEGATE_TOOL,
     label: "Delegate to coder",
     description: delegateToolDescription(),
     parameters: DelegateParams,

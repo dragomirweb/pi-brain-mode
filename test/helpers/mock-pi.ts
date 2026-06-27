@@ -36,6 +36,7 @@ export function makeMockPi(opts?: MockPiOptions) {
   const knownTools = opts?.knownTools;
   const commands = new Map<string, CommandDefinition>();
   const tools = new Map<string, ToolDefinition>();
+  const registeredToolNames: string[] = [];
   const flags = new Map<string, boolean | string | undefined>(Object.entries(opts?.flags ?? {}));
   const onHandlers = new Map<string, LifecycleHandler[]>();
   const eventBus = new EventEmitter();
@@ -75,7 +76,11 @@ export function makeMockPi(opts?: MockPiOptions) {
     },
     getActiveTools: () => [...activeTools],
     getAllTools: () =>
-      (knownTools ?? activeTools).map((name) => ({ name, description: "", parameters: undefined })),
+      [...new Set([...(knownTools ?? activeTools), ...registeredToolNames])].map((name) => ({
+        name,
+        description: "",
+        parameters: undefined,
+      })),
     setModel: async (model: MockModel) => {
       setModelCalls.push(model);
       return setModelOk;
@@ -88,6 +93,7 @@ export function makeMockPi(opts?: MockPiOptions) {
     },
     registerTool: (def: ToolDefinition) => {
       tools.set(def.name, def);
+      if (!registeredToolNames.includes(def.name)) registeredToolNames.push(def.name);
     },
     registerFlag: (name: string, def: FlagDefinition) => {
       if (!flags.has(name) && def.default !== undefined) flags.set(name, def.default);

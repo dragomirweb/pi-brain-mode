@@ -1,3 +1,4 @@
+export const DELEGATE_TOOL = "delegate_to_coder";
 export const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 export const ORCHESTRATOR_TOOLS_NO_BASH = ["read", "grep", "find", "ls"] as const;
 
@@ -18,7 +19,8 @@ export function createBrainState(config: BrainConfig): BrainState {
 }
 
 export function orchestratorToolset(config: BrainConfig): string[] {
-  return config.allowBash ? [...ORCHESTRATOR_TOOLS] : [...ORCHESTRATOR_TOOLS_NO_BASH];
+  const base = config.allowBash ? [...ORCHESTRATOR_TOOLS] : [...ORCHESTRATOR_TOOLS_NO_BASH];
+  return [...base, DELEGATE_TOOL];
 }
 
 export function applicableToolset(known: string[], config: BrainConfig): string[] {
