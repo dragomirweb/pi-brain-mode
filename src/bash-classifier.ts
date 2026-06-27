@@ -203,7 +203,12 @@ function classifySegment(segment: string): SegmentClassification {
     );
   }
 
-  if (hasFileRedirect(stripped)) {
+  // Detect redirection on the ORIGINAL, quote-bearing segment: hasFileRedirect
+  // is quote-aware, so running it on `segment` ignores quoted `>`/`=>` while
+  // still catching real unquoted redirects. (stripPrefixes drops quote chars,
+  // which would turn a quoted `>` into a false positive.) Prefixes like
+  // sudo/env/assignments never contain `>`, so using `segment` here is safe.
+  if (hasFileRedirect(segment)) {
     return segmentBlock(
       "blocked_destructive",
       "bash blocked: command writes a file via redirection.",

