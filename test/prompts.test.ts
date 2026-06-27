@@ -27,6 +27,12 @@ describe("prompts", () => {
     expect(addendum).toContain("is blocked");
   });
 
+  it("directs the orchestrator to use repository-relative paths", () => {
+    const addendum = brainSystemAddendum(makeBrainState(config));
+
+    expect(addendum).toMatch(/repository-relative|relative path/i);
+  });
+
   it("says shell is fully removed when bash is not allowed", () => {
     const state = makeBrainState({ ...config, allowBash: false });
 

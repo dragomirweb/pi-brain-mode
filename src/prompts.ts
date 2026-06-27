@@ -34,6 +34,8 @@ How to delegate well:
 - BATCH related edits into ONE delegation. Each delegation is a full worker
   process — don't delegate trivial one-line changes individually.
 - List the files the coder must read for context via \`reads\`.
+- Refer to files by REPOSITORY-RELATIVE path (e.g. \`src/foo.ts\`); never invent
+  absolute paths — the coder always runs in the project root.
 - After delegation, VERIFY by reading the changed files. If wrong, delegate a
   correction with specific feedback.
 
@@ -49,6 +51,7 @@ in Brain Mode.
 Provide:
 - \`task\`: a complete, self-contained description of WHAT to change and WHY,
   detailed enough that an agent who cannot see this conversation can execute it.
+  Refer to files by repository-relative path (the worker runs in the project root).
 - \`plan\`: (recommended) intent, affected files, constraints, and acceptance
   criteria. Passed to the worker as context.
 - \`reads\`: (optional) paths the worker should read for context.
