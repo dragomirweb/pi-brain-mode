@@ -24,6 +24,11 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
     type: "boolean",
     description: "Hard-remove bash from the orchestrator (no read-only bash).",
   });
+  pi.registerFlag("brain-gate-command", {
+    type: "string",
+    description:
+      "Post-delegation quality gate command (default: auto-detect `npm run check`; `off` to disable).",
+  });
 }
 
 export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig {

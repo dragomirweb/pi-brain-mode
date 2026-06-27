@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import process from "node:process";
@@ -34,6 +34,7 @@ type WorkerDetails = {
 type JsonObject = Record<string, unknown>;
 
 let spawnTimeoutMs = 180_000;
+const gateTimeoutMs = 180_000;
 
 export function setSpawnTimeoutMs(ms: number): void {
   spawnTimeoutMs = ms;
@@ -59,11 +60,14 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
       }
 
       const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
+      const gateCommand = resolveGateCommand(pi, ctx.cwd);
       let lastErr: Error | null = null;
 
       for (const model of models) {
         try {
-          return await runWorker(model, params, signal, onUpdate, ctx.cwd);
+          const result = await runWorker(model, params, signal, onUpdate, ctx.cwd);
+          const gate = await runGate(ctx.cwd, gateCommand, signal);
+          return withGate(result, gate);
         } catch (err) {
           lastErr = toError(err);
           if (!isModelUnavailable(lastErr)) throw lastErr;
@@ -240,6 +244,109 @@ async function runWorker(
   } finally {
     rmSync(sysPromptDir, { force: true, recursive: true });
   }
+}
+
+function resolveGateCommand(pi: ExtensionAPI, cwd: string): string | null {
+  const flag = typeof pi.getFlag === "function" ? pi.getFlag("brain-gate-command") : undefined;
+  if (typeof flag === "string") {
+    const normalized = flag.trim();
+    const lowered = normalized.toLowerCase();
+    if (normalized === "" || lowered === "off" || lowered === "none") return null;
+    return normalized;
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as {
+      scripts?: Record<string, unknown>;
+    };
+    const scripts = pkg.scripts ?? {};
+    if (typeof scripts.check === "string") return "npm run check";
+    if (typeof scripts.test === "string") return "npm test";
+  } catch {
+    // No package.json (or unreadable) — no gate to run.
+  }
+  return null;
+}
+
+async function runGate(
+  cwd: string,
+  command: string | null,
+  signal: AbortSignal | undefined,
+): Promise<{ ran: boolean; ok: boolean; command: string; output: string }> {
+  if (!command) return { ran: false, ok: true, command: "", output: "" };
+
+  return new Promise((resolve) => {
+    let output = "";
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> = setTimeout(() => {}, 0);
+
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ ran: true, ok, command, output });
+    };
+
+    const onAbort = () => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // best-effort kill
+      }
+      done(false);
+    };
+
+    const proc = spawn(command, [], {
+      cwd,
+      env: { ...process.env },
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    timer = setTimeout(() => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // best-effort kill
+      }
+      output += "\n(quality gate timed out)";
+      done(false);
+    }, gateTimeoutMs);
+    timer.unref?.();
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    proc.stdout?.on("data", (data) => {
+      output += data.toString();
+    });
+    proc.stderr?.on("data", (data) => {
+      output += data.toString();
+    });
+    proc.on("error", () => done(false));
+    proc.on("close", (code) => done(code === 0));
+  });
+}
+
+function withGate(
+  result: AgentToolResult<WorkerDetails>,
+  gate: { ran: boolean; ok: boolean; command: string; output: string },
+): AgentToolResult<WorkerDetails> {
+  if (!gate.ran) return result;
+
+  const header = gate.ok
+    ? `Quality gate (\`${gate.command}\`): PASS`
+    : `⚠️ Quality gate (\`${gate.command}\`): FAIL`;
+  const body = gate.ok
+    ? ""
+    : `\n${tail(gate.output, 1500) || "(no output)"}\n\nThe delegated changes do NOT pass the project gate — re-delegate a fix to the coder.`;
+
+  const existing =
+    result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+
+  return {
+    ...result,
+    content: [{ type: "text", text: `${existing}\n\n---\n${header}${body}` }],
+  };
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {

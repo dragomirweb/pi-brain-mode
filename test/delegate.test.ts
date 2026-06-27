@@ -278,6 +278,72 @@ describe("delegate_to_coder", () => {
     expect(children[0].kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("runs the quality gate after a successful delegation and reports PASS", async () => {
+    const { tool, ctx } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "write a file" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Worker summary: changed src/example.ts" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].close(0);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Quality gate");
+    expect(text).toContain("PASS");
+  });
+
+  it("surfaces a FAILing quality gate", async () => {
+    const { tool, ctx } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "write a file" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Worker summary: changed src/example.ts" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].pushStderr("biome: found 2 errors");
+    children[1].close(1);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("FAIL");
+    expect(text).toContain("biome");
+    expect(text).toContain("re-delegate a fix to the coder");
+  });
+
   it("assembles task, plan, and reads into the positional task argument", async () => {
     const { tool, ctx } = makeRegisteredTool(true);
 
@@ -305,8 +371,8 @@ describe("delegate_to_coder", () => {
   });
 });
 
-function makeRegisteredTool(enabled: boolean, cwd = "/tmp/cwd") {
-  const { pi, tools } = makeMockPi({ cwd });
+function makeRegisteredTool(enabled: boolean, cwd = "/tmp/cwd", flags?: Record<string, unknown>) {
+  const { pi, tools } = makeMockPi({ cwd, flags: flags as Record<string, boolean | string> });
   const state = createBrainState(baseConfig);
   state.enabled = enabled;
   registerDelegateTool(pi, state);
