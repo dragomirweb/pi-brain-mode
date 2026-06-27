@@ -3,8 +3,9 @@ import { EventEmitter } from "node:events";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { registerDelegateTool, setSpawnTimeoutMs } from "../src/delegate.ts";
+import { registerDelegateTool } from "../src/delegate.ts";
 import { createBrainState } from "../src/state.ts";
+import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 const spawnMock = vi.hoisted(() => vi.fn());
