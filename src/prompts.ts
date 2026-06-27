@@ -95,10 +95,10 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return "Usage: /brain on | off | status";
+  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none>";
 }
 
-export function statusLine(state: BrainState): string {
+export function statusLine(state: BrainState, thinkingModelId: string): string {
   const mode = state.enabled ? "ON" : "OFF";
   const fallbackSuffix =
     state.config.fallbackModels.length > 0
@@ -107,8 +107,29 @@ export function statusLine(state: BrainState): string {
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
 
   return `Brain Mode: ${mode}
+Thinking model: ${thinkingModelId}
 Worker model: ${state.config.workerModel}${fallbackSuffix}
 Orchestrator bash: ${bashMode}`;
+}
+
+export function workerModelSet(state: BrainState): string {
+  return `Worker model set: ${state.config.workerModel} (fallback: ${fallbackText(state)}).`;
+}
+
+export function fallbackSet(state: BrainState): string {
+  return `Worker fallback chain: ${fallbackText(state)}.`;
+}
+
+export function thinkingModelSet(id: string): string {
+  return `Thinking (orchestrator) model set: ${id}.`;
+}
+
+export function unknownModel(value: string): string {
+  return `Unknown model "${value}". Use provider/model-id (e.g. openai-codex/gpt-5.5). See \`pi --list-models\`.`;
+}
+
+export function noApiKey(value: string): string {
+  return `Cannot switch to "${value}": no API key configured for that provider.`;
 }
 
 function fallbackText(state: BrainState): string {

@@ -35,7 +35,12 @@ Use the `/brain` command:
 /brain on
 /brain off
 /brain status
+/brain worker <id>
+/brain thinking <id>
+/brain fallback <id[,id]|none>
 ```
+
+`/brain worker <id>` and `/brain fallback <id[,id]|none>` update the persisted worker model and fallback chain for future delegations. `/brain thinking <id>` switches the orchestrator model for the current session only; it is a one-shot switch and is not persisted. Unknown model names are rejected; use `provider/model-id` or a unique bare model id from `pi --list-models`.
 
 When Brain Mode is on, `edit` and `write` are removed from the main agent. `bash` stays available by default, but it is gated to read/search-style commands; mutating or opaque shell commands are blocked and should be delegated. The main implementation path is `delegate_to_coder`, where the brain sends a scoped task to a coder worker.
 

@@ -52,16 +52,21 @@ describe("prompts", () => {
     expect(prompt.toLowerCase()).toContain("summarize");
   });
 
-  it("status line reflects the worker model and bash mode", () => {
+  it("status line reflects the thinking model, worker model, and bash mode", () => {
     const enabled = makeBrainState(config);
     enabled.enabled = true;
 
-    expect(statusLine(enabled)).toContain("Brain Mode: ON");
-    expect(statusLine(enabled)).toContain("openai-codex/gpt-5.5");
-    expect(statusLine(enabled)).toContain("claude-opus-4-8");
-    expect(statusLine(enabled)).toContain("Orchestrator bash: gated (read-only)");
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain("Brain Mode: ON");
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain(
+      "Thinking model: openai-codex/gpt-5.5",
+    );
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain("openai-codex/gpt-5.5");
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain("claude-opus-4-8");
+    expect(statusLine(enabled, "openai-codex/gpt-5.5")).toContain(
+      "Orchestrator bash: gated (read-only)",
+    );
 
     const noBash = makeBrainState({ ...config, allowBash: false });
-    expect(statusLine(noBash)).toContain("Orchestrator bash: removed");
+    expect(statusLine(noBash, "openai-codex/gpt-5.5")).toContain("Orchestrator bash: removed");
   });
 });

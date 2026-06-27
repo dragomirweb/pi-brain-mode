@@ -1,11 +1,19 @@
 import { EventEmitter } from "node:events";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
+interface MockModel {
+  provider: string;
+  id: string;
+}
+
 interface MockPiOptions {
   initialTools?: string[];
   knownTools?: string[];
   cwd?: string;
   flags?: Record<string, boolean | string>;
+  models?: MockModel[];
+  currentModel?: MockModel;
+  setModelOk?: boolean;
 }
 
 interface MockEntry {
@@ -33,11 +41,30 @@ export function makeMockPi(opts?: MockPiOptions) {
   const eventBus = new EventEmitter();
   eventBus.setMaxListeners(0);
 
-  const notifications: Array<{ msg: string; type?: string }> = [];
+  const models = opts?.models ?? [
+    { provider: "openai-codex", id: "gpt-5.5" },
+    { provider: "claude", id: "opus-4-8" },
+    { provider: "anthropic", id: "claude-sonnet-4" },
+  ];
+  const currentModel = opts?.currentModel ?? models[0];
+  const modelRegistry = {
+    getAll: () => [...models],
+    find: (provider: string, modelId: string) =>
+      models.find((model) => model.provider === provider && model.id === modelId),
+  };
+  const setModelCalls: MockModel[] = [];
+  const setModelOk = opts?.setModelOk ?? true;
+
+  const notifications: Array<{ msg: string; type?: string; message: string; level?: string }> = [];
   const ctx = {
     cwd: opts?.cwd ?? process.cwd(),
     sessionManager: { getEntries: () => entries },
-    ui: { notify: (msg: string, type?: string) => notifications.push({ msg, type }) },
+    modelRegistry,
+    model: currentModel,
+    ui: {
+      notify: (msg: string, type?: string) =>
+        notifications.push({ msg, type, message: msg, level: type }),
+    },
     signal: undefined,
   } as unknown as ExtensionCommandContext;
 
@@ -49,6 +76,10 @@ export function makeMockPi(opts?: MockPiOptions) {
     getActiveTools: () => [...activeTools],
     getAllTools: () =>
       (knownTools ?? activeTools).map((name) => ({ name, description: "", parameters: undefined })),
+    setModel: async (model: MockModel) => {
+      setModelCalls.push(model);
+      return setModelOk;
+    },
     appendEntry: (customType: string, data: unknown) => {
       entries.push({ customType, data });
     },
@@ -95,6 +126,7 @@ export function makeMockPi(opts?: MockPiOptions) {
     tools,
     flags,
     notifications,
+    setModelCalls,
     dispatch,
     getActiveTools: () => [...activeTools],
   };
