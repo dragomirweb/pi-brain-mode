@@ -20,7 +20,10 @@
   "pi": {
     "extensions": ["./src/index.ts"]
   },
-  "files": ["src/", "README.md", "CHANGELOG.md", "LICENSE"],
+  "pi-subagents": {
+    "agents": ["./agents"]
+  },
+  "files": ["src/", "agents/", "README.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
