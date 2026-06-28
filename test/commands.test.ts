@@ -10,7 +10,6 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 600_000,
 };
 
 const defaultModels = [
@@ -180,34 +179,6 @@ describe("/brain model configuration commands", () => {
 
     expect(notifications.at(-1)?.msg ?? "").toContain("Reviewer:");
   });
-
-  it("/brain timeout sets worker timeout in seconds and persists", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
-
-    await brain.handler("timeout 300", ctx);
-
-    expect(state.config.workerTimeout).toBe(300_000);
-    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
-    expect(notifications.at(-1)?.msg ?? "").toContain("300s");
-  });
-
-  it("/brain timeout rejects values below 30 seconds", async () => {
-    const { brain, ctx, state, notifications } = setup();
-    const original = state.config.workerTimeout;
-
-    await brain.handler("timeout 10", ctx);
-
-    expect(state.config.workerTimeout).toBe(original);
-    expect(notifications.at(-1)).toMatchObject({ type: "error" });
-  });
-
-  it("/brain status shows the worker timeout", async () => {
-    const { brain, ctx, notifications } = setup();
-
-    await brain.handler("status", ctx);
-
-    expect(notifications.at(-1)?.msg ?? "").toContain("Worker timeout: 600s");
-  });
 });
 
 describe("/brain settings menu", () => {
@@ -286,17 +257,6 @@ describe("/brain settings menu", () => {
     expect(state.config.fallbackModels).toEqual([]);
   });
 
-  it("changes the worker timeout via the menu", async () => {
-    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
-
-    selectResponses.push("Worker timeout \u2014 600s");
-    inputResponses.push("120");
-    selectResponses.push(undefined);
-    await brain.handler("", ctx);
-
-    expect(state.config.workerTimeout).toBe(120_000);
-  });
-
   it("toggles the reviewer via the menu", async () => {
     const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
 
@@ -361,7 +321,6 @@ function setup(opts?: SetupOptions) {
     allowBash: baseConfig.allowBash,
     reviewerEnabled: baseConfig.reviewerEnabled,
     reviewerModel: baseConfig.reviewerModel,
-    workerTimeout: baseConfig.workerTimeout,
   });
   registerBrainCommand(mock.pi, state);
   const brain = mock.commands.get("brain");
