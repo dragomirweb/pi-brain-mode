@@ -10,7 +10,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 180_000,
+  workerTimeout: 600_000,
 };
 
 const defaultModels = [
@@ -206,7 +206,148 @@ describe("/brain model configuration commands", () => {
 
     await brain.handler("status", ctx);
 
-    expect(notifications.at(-1)?.msg ?? "").toContain("Worker timeout: 180s");
+    expect(notifications.at(-1)?.msg ?? "").toContain("Worker timeout: 600s");
+  });
+});
+
+describe("/brain settings menu", () => {
+  it("opens the interactive menu when hasUI is true and no args given", async () => {
+    const { brain, ctx, selectResponses, selectCalls } = setup({ hasUI: true });
+
+    selectResponses.push(undefined); // user dismisses immediately
+    await brain.handler("", ctx);
+
+    expect(selectCalls).toHaveLength(1);
+    expect(selectCalls[0].title).toBe("Brain Mode Settings");
+    expect(selectCalls[0].options[0]).toContain("Brain Mode");
+  });
+
+  it("falls back to text status when hasUI is false", async () => {
+    const { brain, ctx, selectCalls, notifications } = setup({ hasUI: false });
+
+    await brain.handler("", ctx);
+
+    expect(selectCalls).toHaveLength(0);
+    expect(notifications.at(-1)?.msg ?? "").toContain("Brain Mode:");
+  });
+
+  it("toggles brain mode on via the menu", async () => {
+    const { brain, ctx, state, selectResponses, notifications } = setup({ hasUI: true });
+
+    selectResponses.push("Brain Mode \u2014 OFF"); // select toggle
+    selectResponses.push(undefined); // dismiss
+    await brain.handler("", ctx);
+
+    expect(state.enabled).toBe(true);
+    expect(notifications.at(-1)?.msg ?? "").toContain("Brain Mode ON");
+  });
+
+  it("toggles brain mode off via the menu", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
+    state.enabled = true;
+
+    selectResponses.push("Brain Mode \u2014 ON"); // select toggle
+    selectResponses.push(undefined); // dismiss
+    await brain.handler("", ctx);
+
+    expect(state.enabled).toBe(false);
+  });
+
+  it("changes the worker model via the menu", async () => {
+    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Worker model \u2014 openai-codex/gpt-5.5");
+    inputResponses.push("claude/opus-4-8");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.workerModel).toBe("claude/opus-4-8");
+  });
+
+  it("changes fallback models via the menu", async () => {
+    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Fallback models \u2014 claude/opus-4-8");
+    inputResponses.push("anthropic/claude-sonnet-4");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.fallbackModels).toEqual(["anthropic/claude-sonnet-4"]);
+  });
+
+  it("clears fallback models when 'none' is entered", async () => {
+    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Fallback models \u2014 claude/opus-4-8");
+    inputResponses.push("none");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.fallbackModels).toEqual([]);
+  });
+
+  it("changes the worker timeout via the menu", async () => {
+    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Worker timeout \u2014 600s");
+    inputResponses.push("120");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.workerTimeout).toBe(120_000);
+  });
+
+  it("toggles the reviewer via the menu", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Reviewer \u2014 OFF");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.reviewerEnabled).toBe(true);
+  });
+
+  it("toggles bash via the menu", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
+
+    selectResponses.push("Bash \u2014 read-only");
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    expect(state.config.allowBash).toBe(false);
+  });
+
+  it("shows reviewer model option only when reviewer is enabled", async () => {
+    const { brain, ctx, state, selectResponses, selectCalls } = setup({ hasUI: true });
+    state.config.reviewerEnabled = true;
+
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    const options = selectCalls[0].options;
+    expect(options.some((o) => o.startsWith("Reviewer model"))).toBe(true);
+  });
+
+  it("hides reviewer model option when reviewer is disabled", async () => {
+    const { brain, ctx, selectResponses, selectCalls } = setup({ hasUI: true });
+
+    selectResponses.push(undefined);
+    await brain.handler("", ctx);
+
+    const options = selectCalls[0].options;
+    expect(options.some((o) => o.startsWith("Reviewer model"))).toBe(false);
+  });
+
+  it("loops the menu until dismissed", async () => {
+    const { brain, ctx, state, selectResponses, selectCalls } = setup({ hasUI: true });
+
+    selectResponses.push("Reviewer \u2014 OFF"); // toggle reviewer on
+    selectResponses.push("Reviewer \u2014 ON"); // toggle reviewer off
+    selectResponses.push(undefined); // dismiss
+    await brain.handler("", ctx);
+
+    expect(selectCalls).toHaveLength(3);
+    expect(state.config.reviewerEnabled).toBe(false);
   });
 });
 
