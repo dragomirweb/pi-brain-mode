@@ -6,7 +6,7 @@ import type {
 
 import { persist } from "./persistence.ts";
 import * as msg from "./prompts.ts";
-import { type BrainState, applicableToolset } from "./state.ts";
+import { type BrainState, applyBrainTools } from "./state.ts";
 
 type ModelRegistry = ExtensionContext["modelRegistry"];
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -34,7 +34,23 @@ function resolveModel(registry: ModelRegistry, idStr: string): Model | undefined
 
 export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void {
   pi.registerCommand("brain", {
-    description: "Brain Mode: /brain on|off|status|help",
+    description: "Brain Mode: /brain (settings) | on | off | status | help",
+    getArgumentCompletions: (prefix: string) => {
+      const verbs = [
+        "on",
+        "off",
+        "status",
+        "worker",
+        "thinking",
+        "fallback",
+        "timeout",
+        "reviewer",
+        "help",
+      ];
+      const trimmed = prefix.trim();
+      if (trimmed.indexOf(" ") !== -1) return null;
+      return verbs.filter((v) => v.startsWith(trimmed)).map((v) => ({ value: v, label: v }));
+    },
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const text = (args ?? "").trim();
       const spaceIndex = text.search(/\s/);
@@ -221,76 +237,17 @@ async function openSettingsMenu(
         }
         break;
 
-      case "Worker model": {
-        const value = await ctx.ui.input(
-          "Worker model (provider/model-id)",
-          state.config.workerModel,
-        );
-        if (value) {
-          const resolved = resolveModel(ctx.modelRegistry, value);
-          if (resolved) {
-            state.config.workerModel = canonicalModelId(resolved);
-            persist(pi, state);
-            ctx.ui.notify(msg.workerModelSet(state), "info");
-          } else {
-            ctx.ui.notify(msg.unknownModel(value), "error");
-          }
-        }
+      case "Worker model":
+        await showModelPicker(pi, state, ctx, "worker");
         break;
-      }
 
-      case "Fallback models": {
-        const current = state.config.fallbackModels.join(", ") || "none";
-        const value = await ctx.ui.input("Fallback models (comma-separated, or 'none')", current);
-        if (value !== undefined) {
-          if (value.toLowerCase() === "none" || value.trim() === "") {
-            state.config.fallbackModels = [];
-            persist(pi, state);
-            ctx.ui.notify(msg.fallbackSet(state), "info");
-          } else {
-            const tokens = value
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean);
-            const resolved: string[] = [];
-            let valid = true;
-            for (const token of tokens) {
-              const model = resolveModel(ctx.modelRegistry, token);
-              if (!model) {
-                ctx.ui.notify(msg.unknownModel(token), "error");
-                valid = false;
-                break;
-              }
-              resolved.push(canonicalModelId(model));
-            }
-            if (valid) {
-              state.config.fallbackModels = resolved;
-              persist(pi, state);
-              ctx.ui.notify(msg.fallbackSet(state), "info");
-            }
-          }
-        }
+      case "Fallback models":
+        await showFallbackPicker(pi, state, ctx);
         break;
-      }
 
-      case "Thinking model": {
-        const current = ctx.model ? canonicalModelId(ctx.model) : "";
-        const value = await ctx.ui.input("Thinking model (provider/model-id)", current);
-        if (value) {
-          const resolved = resolveModel(ctx.modelRegistry, value);
-          if (!resolved) {
-            ctx.ui.notify(msg.unknownModel(value), "error");
-          } else {
-            const ok = await pi.setModel(resolved);
-            if (!ok) {
-              ctx.ui.notify(msg.noApiKey(value), "error");
-            } else {
-              ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
-            }
-          }
-        }
+      case "Thinking model":
+        await showModelPicker(pi, state, ctx, "thinking");
         break;
-      }
 
       case "Worker timeout": {
         const current = String(Math.round(state.config.workerTimeout / 1000));
@@ -313,31 +270,14 @@ async function openSettingsMenu(
         ctx.ui.notify(msg.reviewerSet(state), "info");
         break;
 
-      case "Reviewer model": {
-        const current = state.config.reviewerModel || "auto";
-        const value = await ctx.ui.input("Reviewer model (provider/model-id, or 'auto')", current);
-        if (value !== undefined) {
-          if (value.toLowerCase() === "auto" || value.trim() === "") {
-            state.config.reviewerModel = "";
-          } else {
-            const resolved = resolveModel(ctx.modelRegistry, value);
-            if (!resolved) {
-              ctx.ui.notify(msg.unknownModel(value), "error");
-              break;
-            }
-            state.config.reviewerModel = canonicalModelId(resolved);
-          }
-          persist(pi, state);
-          ctx.ui.notify(msg.reviewerModelSet(state), "info");
-        }
+      case "Reviewer model":
+        await showModelPicker(pi, state, ctx, "reviewer");
         break;
-      }
 
-      case "Bash":
+      case "Bash": {
         state.config.allowBash = !state.config.allowBash;
         if (state.enabled) {
-          const known = pi.getAllTools().map((tool) => tool.name);
-          pi.setActiveTools(applicableToolset(known, state.config));
+          pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
         }
         persist(pi, state);
         ctx.ui.notify(
@@ -345,29 +285,142 @@ async function openSettingsMenu(
           "info",
         );
         break;
+      }
     }
   }
 }
 
+// ---------- Model and fallback pickers ----------
+
+async function showModelPicker(
+  pi: ExtensionAPI,
+  state: BrainState,
+  ctx: ExtensionCommandContext,
+  target: "worker" | "thinking" | "reviewer",
+): Promise<void> {
+  const available =
+    typeof ctx.modelRegistry.getAvailable === "function"
+      ? ctx.modelRegistry.getAvailable()
+      : ctx.modelRegistry.getAll();
+
+  if (available.length === 0) {
+    ctx.ui.notify("No models available. Check your API keys.", "error");
+    return;
+  }
+
+  const currentId =
+    target === "worker"
+      ? state.config.workerModel
+      : target === "reviewer"
+        ? state.config.reviewerModel || "auto"
+        : ctx.model
+          ? canonicalModelId(ctx.model)
+          : "";
+
+  const options = target === "reviewer" ? ["auto (use orchestrator model)"] : ([] as string[]);
+
+  for (const m of available) {
+    const id = canonicalModelId(m);
+    const marker = id === currentId ? " ← current" : "";
+    options.push(`${id}${marker}`);
+  }
+
+  const choice = await ctx.ui.select(`Select ${target} model`, options);
+  if (!choice) return;
+
+  if (choice.startsWith("auto")) {
+    if (target === "reviewer") {
+      state.config.reviewerModel = "";
+      persist(pi, state);
+      ctx.ui.notify(msg.reviewerModelSet(state), "info");
+    }
+    return;
+  }
+
+  const modelId = choice.replace(" ← current", "");
+  const resolved = resolveModel(ctx.modelRegistry, modelId);
+  if (!resolved) {
+    ctx.ui.notify(msg.unknownModel(modelId), "error");
+    return;
+  }
+
+  if (target === "worker") {
+    state.config.workerModel = canonicalModelId(resolved);
+    persist(pi, state);
+    ctx.ui.notify(msg.workerModelSet(state), "info");
+  } else if (target === "thinking") {
+    const ok = await pi.setModel(resolved);
+    if (!ok) {
+      ctx.ui.notify(msg.noApiKey(modelId), "error");
+    } else {
+      ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
+    }
+  } else {
+    state.config.reviewerModel = canonicalModelId(resolved);
+    persist(pi, state);
+    ctx.ui.notify(msg.reviewerModelSet(state), "info");
+  }
+}
+
+async function showFallbackPicker(
+  pi: ExtensionAPI,
+  state: BrainState,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const available =
+    typeof ctx.modelRegistry.getAvailable === "function"
+      ? ctx.modelRegistry.getAvailable()
+      : ctx.modelRegistry.getAll();
+
+  const options = available
+    .map((m) => canonicalModelId(m))
+    .filter((id) => id !== state.config.workerModel);
+
+  const menuOptions = [
+    "Clear all fallbacks",
+    ...options.map((id) => {
+      const isFallback = state.config.fallbackModels.includes(id);
+      return `${isFallback ? "✅" : "⚪"} ${id}`;
+    }),
+  ];
+
+  const choice = await ctx.ui.select("Select fallback model", menuOptions);
+  if (!choice) return;
+
+  if (choice === "Clear all fallbacks") {
+    state.config.fallbackModels = [];
+    persist(pi, state);
+    ctx.ui.notify(msg.fallbackSet(state), "info");
+    return;
+  }
+
+  // Toggle the selected model in the fallback list
+  const modelId = choice.replace(/^[✅⚪] /, "");
+  if (state.config.fallbackModels.includes(modelId)) {
+    state.config.fallbackModels = state.config.fallbackModels.filter((id) => id !== modelId);
+  } else {
+    state.config.fallbackModels.push(modelId);
+  }
+  persist(pi, state);
+  ctx.ui.notify(msg.fallbackSet(state), "info");
+}
+
 export function enable(pi: ExtensionAPI, state: BrainState): void {
-  if (state.fullTools === null) state.fullTools = pi.getActiveTools();
   state.enabled = true;
-  const known = pi.getAllTools().map((tool) => tool.name);
-  pi.setActiveTools(applicableToolset(known, state.config));
+  pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
   persist(pi, state);
 }
 
 function disable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = false;
-  pi.setActiveTools(state.fullTools ?? ["read", "bash", "edit", "write"]);
+  pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, false));
   persist(pi, state);
 }
 
 function setReviewerEnabled(pi: ExtensionAPI, state: BrainState, on: boolean): void {
   state.config.reviewerEnabled = on;
   if (state.enabled) {
-    const known = pi.getAllTools().map((tool) => tool.name);
-    pi.setActiveTools(applicableToolset(known, state.config));
+    pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
   }
   persist(pi, state);
 }
