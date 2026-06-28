@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerReviewerTool } from "../src/reviewer.ts";
 import { createBrainState } from "../src/state.ts";
+import { setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
 import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -70,8 +71,13 @@ beforeEach(() => {
   });
 });
 
+beforeEach(() => {
+  setBridgeDetectTimeoutMs(0);
+});
+
 afterEach(() => {
   setSpawnTimeoutMs(600_000);
+  setBridgeDetectTimeoutMs(5_000);
   vi.clearAllMocks();
 });
 
