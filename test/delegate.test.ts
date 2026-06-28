@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerDelegateTool } from "../src/delegate.ts";
 import { createBrainState } from "../src/state.ts";
+import { setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
 import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -71,8 +72,13 @@ beforeEach(() => {
   });
 });
 
+beforeEach(() => {
+  setBridgeDetectTimeoutMs(0);
+});
+
 afterEach(() => {
   setSpawnTimeoutMs(600_000);
+  setBridgeDetectTimeoutMs(5_000);
   vi.clearAllMocks();
 });
 
@@ -99,6 +105,7 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "message_end",
       message: {
@@ -152,6 +159,7 @@ describe("delegate_to_coder", () => {
       undefined,
       ctx,
     );
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStderr("worker failed loudly");
     children[0].close(1);
 
@@ -168,6 +176,7 @@ describe("delegate_to_coder", () => {
       undefined,
       ctx,
     );
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "message_end",
       message: {
@@ -220,6 +229,7 @@ describe("delegate_to_coder", () => {
     } as ExtensionContext);
 
     // Simulate the worker editing a file before timeout hits
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "tool_execution_end",
       toolName: "edit",
@@ -244,6 +254,7 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStderr("unknown model openai-codex/gpt-5.5");
     children[0].close(1);
 
@@ -277,6 +288,7 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStderr("panic: nil pointer in provider plugin");
     children[0].close(1);
 
@@ -295,12 +307,13 @@ describe("delegate_to_coder", () => {
       undefined,
       ctx,
     );
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].close(0);
 
     await expect(resultPromise).rejects.toThrow(/no output/i);
   });
 
-  it("aborts, kills the child, and rejects", async () => {
+  it("aborts via bridge before spawn and returns abort text", async () => {
     const { tool, ctx } = makeRegisteredTool(true);
     const abortController = new AbortController();
 
@@ -313,8 +326,11 @@ describe("delegate_to_coder", () => {
     );
     abortController.abort();
 
-    await expect(resultPromise).rejects.toThrow(/aborted/);
-    expect(children[0].kill).toHaveBeenCalledWith("SIGTERM");
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("aborted");
+    // Bridge handled the abort — no spawn occurred.
+    expect(children).toHaveLength(0);
   });
 
   it("runs the quality gate after a successful delegation and reports PASS", async () => {
@@ -330,6 +346,7 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "message_end",
       message: {
@@ -362,6 +379,7 @@ describe("delegate_to_coder", () => {
       ctx,
     );
 
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "message_end",
       message: {
@@ -393,6 +411,7 @@ describe("delegate_to_coder", () => {
       undefined,
       ctx,
     );
+    await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].pushStdout({
       type: "message_end",
       message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
