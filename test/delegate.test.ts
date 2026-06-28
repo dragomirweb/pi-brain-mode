@@ -21,7 +21,6 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 600_000,
 };
 
 class FakeChild extends EventEmitter {
@@ -192,14 +191,9 @@ describe("delegate_to_coder", () => {
   });
 
   it("times out, returns partial progress, and kills the child", async () => {
-    const { tool, ctx } = makeRegisteredTool(true);
-    // Override config timeout to something tiny for the test
-    const state = createBrainState({ ...baseConfig, workerTimeout: 20 });
-    state.enabled = true;
-    const { pi: pi2, tools: tools2 } = makeMockPi({ cwd: "/tmp/cwd" });
-    registerDelegateTool(pi2, state);
-    const tool2 = tools2.get("delegate_to_coder");
-    if (!tool2) throw new Error("delegate_to_coder was not registered");
+    // Override spawn timeout to something tiny for the test
+    setSpawnTimeoutMs(20);
+    const { tool: tool2, ctx } = makeRegisteredTool(true, "/tmp/cwd");
 
     const resultPromise = tool2.execute(
       "call-1",
@@ -217,12 +211,8 @@ describe("delegate_to_coder", () => {
   });
 
   it("includes changed files in timeout partial progress", async () => {
-    const state = createBrainState({ ...baseConfig, workerTimeout: 50 });
-    state.enabled = true;
-    const { pi: pi2, tools: tools2 } = makeMockPi({ cwd: "/tmp/cwd" });
-    registerDelegateTool(pi2, state);
-    const tool2 = tools2.get("delegate_to_coder");
-    if (!tool2) throw new Error("delegate_to_coder was not registered");
+    setSpawnTimeoutMs(50);
+    const { tool: tool2, ctx } = makeRegisteredTool(true, "/tmp/cwd");
 
     const resultPromise = tool2.execute("call-1", { task: "change a file" }, undefined, undefined, {
       cwd: "/tmp/cwd",
