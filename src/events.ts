@@ -10,7 +10,7 @@ import { classifyBashCommand } from "./bash-classifier.ts";
 import { resolveConfig } from "./config.ts";
 import { loadLatest } from "./persistence.ts";
 import * as prompts from "./prompts.ts";
-import { type BrainState, applicableToolset } from "./state.ts";
+import { type BrainState, applyBrainTools } from "./state.ts";
 
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
@@ -26,10 +26,8 @@ export function registerBrainEvents(pi: ExtensionAPI, state: BrainState): void {
       state.enabled = saved.enabled;
       state.config = resolveConfig(pi, saved.config);
     }
-    if (state.fullTools === null) state.fullTools = pi.getActiveTools();
     if (state.enabled) {
-      const known = pi.getAllTools().map((tool) => tool.name);
-      pi.setActiveTools(applicableToolset(known, state.config));
+      pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
     }
   });
 
