@@ -23,7 +23,7 @@ import {
 
 type DelegateParamsT = Static<typeof DelegateParams>;
 
-const gateTimeoutMs = 180_000;
+const gateTimeoutMs = 480_000;
 
 export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void {
   pi.registerTool({
