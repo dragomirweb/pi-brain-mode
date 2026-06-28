@@ -13,7 +13,7 @@ const config = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 180_000,
+  workerTimeout: 600_000,
 };
 
 describe("prompts", () => {
@@ -63,7 +63,7 @@ describe("prompts", () => {
   it("includes timeout awareness and decomposition guidance in the addendum", () => {
     const addendum = brainSystemAddendum(makeBrainState(config));
 
-    expect(addendum).toContain("180s timeout");
+    expect(addendum).toContain("600s timeout");
     expect(addendum).toMatch(/split|decompos/i);
     expect(addendum).toContain("By file group");
     expect(addendum).toContain("By phase");
@@ -75,7 +75,7 @@ describe("prompts", () => {
     const addendum = brainSystemAddendum(state);
 
     expect(addendum).toContain("300s timeout");
-    expect(addendum).not.toContain("180s");
+    expect(addendum).not.toContain("600s");
   });
 
   it("exposes a TypeBox object schema with task required and plan/reads optional", () => {
