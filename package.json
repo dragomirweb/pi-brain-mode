@@ -1,6 +1,6 @@
 {
   "name": "pi-brain-mode",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Brain Mode for Pi: a hard-enforced orchestrator-worker split. The main agent plans, reads, and runs read-only shell; all file mutations are delegated to a coder worker.",
   "type": "module",
   "license": "MIT",
@@ -13,17 +13,33 @@
   "bugs": {
     "url": "https://github.com/dragomirweb/pi-brain-mode/issues"
   },
-  "keywords": ["pi-package", "pi-extension", "orchestrator", "subagents", "brain-mode"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "orchestrator",
+    "subagents",
+    "brain-mode"
+  ],
   "engines": {
     "node": ">=22.19.0"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "pi-subagents": {
-    "agents": ["./agents"]
+    "agents": [
+      "./agents"
+    ]
   },
-  "files": ["src/", "agents/", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": [
+    "src/",
+    "agents/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
