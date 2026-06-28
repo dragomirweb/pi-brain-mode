@@ -10,7 +10,6 @@ export interface BrainConfig {
   allowBash: boolean;
   reviewerEnabled: boolean;
   reviewerModel: string;
-  workerTimeout: number;
 }
 
 export interface BrainState {
