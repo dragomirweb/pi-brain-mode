@@ -20,7 +20,6 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: true,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 600_000,
 };
 
 class FakeChild extends EventEmitter {
