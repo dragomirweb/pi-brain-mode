@@ -13,7 +13,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 180_000,
+  workerTimeout: 600_000,
 };
 
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];
