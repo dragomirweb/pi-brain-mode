@@ -36,17 +36,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
   pi.registerCommand("brain", {
     description: "Brain Mode: /brain (settings) | on | off | status | help",
     getArgumentCompletions: (prefix: string) => {
-      const verbs = [
-        "on",
-        "off",
-        "status",
-        "worker",
-        "thinking",
-        "fallback",
-        "timeout",
-        "reviewer",
-        "help",
-      ];
+      const verbs = ["on", "off", "status", "worker", "thinking", "fallback", "reviewer", "help"];
       const trimmed = prefix.trim();
       if (trimmed.indexOf(" ") !== -1) return null;
       return verbs.filter((v) => v.startsWith(trimmed)).map((v) => ({ value: v, label: v }));
@@ -143,21 +133,6 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
         return;
       }
-      if (verb === "timeout") {
-        if (value === "") {
-          ctx.ui.notify(msg.brainUsage(), "warning");
-          return;
-        }
-        const seconds = Number.parseInt(value, 10);
-        if (Number.isNaN(seconds) || seconds < 30) {
-          ctx.ui.notify("Timeout must be at least 30 seconds.", "error");
-          return;
-        }
-        state.config.workerTimeout = seconds * 1000;
-        persist(pi, state);
-        ctx.ui.notify(msg.timeoutSet(state), "info");
-        return;
-      }
       if (verb === "reviewer") {
         const sub = value.trim();
         const lowered = sub.toLowerCase();
@@ -202,7 +177,6 @@ async function openSettingsMenu(
 ): Promise<void> {
   while (true) {
     const thinkingModelId = ctx.model ? canonicalModelId(ctx.model) : "unknown";
-    const timeoutSeconds = Math.round(state.config.workerTimeout / 1000);
     const reviewerModelLabel = state.config.reviewerModel || "auto";
 
     const options: string[] = [
@@ -210,7 +184,6 @@ async function openSettingsMenu(
       `Worker model — ${state.config.workerModel}`,
       `Fallback models — ${state.config.fallbackModels.join(", ") || "none"}`,
       `Thinking model — ${thinkingModelId}`,
-      `Worker timeout — ${timeoutSeconds}s`,
       `Reviewer — ${state.config.reviewerEnabled ? "ON" : "OFF"}`,
     ];
 
@@ -248,22 +221,6 @@ async function openSettingsMenu(
       case "Thinking model":
         await showModelPicker(pi, state, ctx, "thinking");
         break;
-
-      case "Worker timeout": {
-        const current = String(Math.round(state.config.workerTimeout / 1000));
-        const value = await ctx.ui.input("Worker timeout (seconds, min 30)", current);
-        if (value) {
-          const seconds = Number.parseInt(value, 10);
-          if (Number.isNaN(seconds) || seconds < 30) {
-            ctx.ui.notify("Timeout must be at least 30 seconds.", "error");
-          } else {
-            state.config.workerTimeout = seconds * 1000;
-            persist(pi, state);
-            ctx.ui.notify(msg.timeoutSet(state), "info");
-          }
-        }
-        break;
-      }
 
       case "Reviewer":
         setReviewerEnabled(pi, state, !state.config.reviewerEnabled);
