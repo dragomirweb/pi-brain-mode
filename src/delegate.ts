@@ -12,6 +12,7 @@ import type { Static } from "typebox";
 
 import { DelegateParams, delegateToolDescription, workerSystemPrompt } from "./prompts.ts";
 import { type BrainState, DELEGATE_TOOL } from "./state.ts";
+import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
 import {
   type WorkerDetails,
   WorkerTimeoutError,
@@ -44,8 +45,30 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
         throw new Error("delegate_to_coder is only available in Brain Mode. Run /brain on first.");
       }
 
-      const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
       const gateCommand = resolveGateCommand(pi, ctx.cwd);
+
+      // Try pi-subagents bridge first — returns null if not installed.
+      const bridgeTask = buildBridgeTask(
+        `Task: ${params.task}`,
+        params.plan ? `## Plan\n${params.plan}` : undefined,
+        params.reads ?? [],
+      );
+      const bridgeResult = await runViaBridge(
+        pi,
+        ctx,
+        "brain-coder",
+        bridgeTask,
+        state.config.workerModel,
+        signal,
+        onUpdate,
+      );
+      if (bridgeResult) {
+        const gate = await runGate(ctx.cwd, gateCommand, signal);
+        return withGate(bridgeResult, gate);
+      }
+
+      // Fallback: direct process spawn with model chain.
+      const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
       let lastErr: Error | null = null;
 
       for (const model of models) {
