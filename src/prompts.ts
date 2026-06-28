@@ -202,7 +202,12 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return "Usage: /brain on|off|status | worker <model-id> | thinking <model-id> | fallback <id[,id]|none> | timeout <seconds> | reviewer on|off|auto|<model-id>";
+  return `/brain — open settings menu
+/brain on|off|status|help
+/brain worker|thinking <model-id>
+/brain fallback <id[,id]|none>
+/brain timeout <seconds>
+/brain reviewer on|off|auto|<model-id>`;
 }
 
 export function statusLine(state: BrainState, thinkingModelId: string): string {
