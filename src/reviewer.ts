@@ -8,6 +8,7 @@ import type { Static } from "typebox";
 
 import { ReviewParams, reviewToolDescription, reviewerSystemPrompt } from "./prompts.ts";
 import { type BrainState, REVIEWER_TOOL } from "./state.ts";
+import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
 import { type WorkerDetails, runSubagent } from "./subagent.ts";
 
 type ReviewParamsT = Static<typeof ReviewParams>;
@@ -39,6 +40,21 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
         state.config.reviewerModel.trim() ||
         (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "") ||
         state.config.workerModel;
+
+      // Try pi-subagents bridge first — returns null if not installed.
+      const bridgeTask = buildBridgeTask(assembleReviewTask(params), undefined, params.reads ?? []);
+      const bridgeResult = await runViaBridge(
+        pi,
+        ctx,
+        "brain-reviewer",
+        bridgeTask,
+        reviewerModel,
+        signal,
+        onUpdate,
+      );
+      if (bridgeResult) return bridgeResult;
+
+      // Fallback: direct process spawn.
       return runSubagent(
         reviewerModel,
         reviewerSystemPrompt(),
