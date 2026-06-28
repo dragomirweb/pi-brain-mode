@@ -14,6 +14,7 @@ interface MockPiOptions {
   models?: MockModel[];
   currentModel?: MockModel;
   setModelOk?: boolean;
+  hasUI?: boolean;
 }
 
 interface MockEntry {
@@ -57,14 +58,28 @@ export function makeMockPi(opts?: MockPiOptions) {
   const setModelOk = opts?.setModelOk ?? true;
 
   const notifications: Array<{ msg: string; type?: string; message: string; level?: string }> = [];
+  const selectResponses: (string | undefined)[] = [];
+  const inputResponses: (string | undefined)[] = [];
+  const selectCalls: Array<{ title: string; options: string[] }> = [];
+  const inputCalls: Array<{ title: string; placeholder?: string }> = [];
   const ctx = {
     cwd: opts?.cwd ?? process.cwd(),
     sessionManager: { getEntries: () => entries },
     modelRegistry,
     model: currentModel,
+    hasUI: opts?.hasUI ?? false,
     ui: {
       notify: (msg: string, type?: string) =>
         notifications.push({ msg, type, message: msg, level: type }),
+      select: async (title: string, options: string[]) => {
+        selectCalls.push({ title, options });
+        return selectResponses.shift();
+      },
+      input: async (title: string, placeholder?: string) => {
+        inputCalls.push({ title, placeholder });
+        return inputResponses.shift();
+      },
+      confirm: async () => true,
     },
     signal: undefined,
   } as unknown as ExtensionCommandContext;
@@ -133,6 +148,10 @@ export function makeMockPi(opts?: MockPiOptions) {
     flags,
     notifications,
     setModelCalls,
+    selectResponses,
+    inputResponses,
+    selectCalls,
+    inputCalls,
     dispatch,
     getActiveTools: () => [...activeTools],
   };
