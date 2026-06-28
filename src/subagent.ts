@@ -22,7 +22,7 @@ export type WorkerDetails = {
 
 type JsonObject = Record<string, unknown>;
 
-let spawnTimeoutMs = 180_000;
+let spawnTimeoutMs = 600_000;
 
 export class WorkerTimeoutError extends Error {
   readonly partialResult: AgentToolResult<WorkerDetails>;
