@@ -4,7 +4,13 @@ import { enable, registerBrainCommand } from "../src/commands.ts";
 import { registerBrainFlags, resolveConfig } from "../src/config.ts";
 import { registerDelegateTool } from "../src/delegate.ts";
 import { registerBrainEvents } from "../src/events.ts";
-import { PERSIST_KEY, REVIEWER_TOOL, createBrainState, orchestratorToolset } from "../src/state.ts";
+import {
+  DELEGATE_TOOL,
+  PERSIST_KEY,
+  REVIEWER_TOOL,
+  applyBrainTools,
+  createBrainState,
+} from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 const baseConfig = {
@@ -19,38 +25,47 @@ const baseConfig = {
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];
 
 describe("brain state machine", () => {
-  it("enable captures fullTools once, applies the orchestrator toolset, and persists", () => {
-    const { pi, entries, setActiveToolsCalls } = makeMockPi();
+  it("enable removes edit/write and adds delegate_to_coder, then persists", () => {
+    const { pi, entries, setActiveToolsCalls } = makeMockPi({
+      initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    });
     const state = createBrainState(baseConfig);
 
     enable(pi, state);
-    const capturedTools = state.fullTools;
-    enable(pi, state);
 
-    expect(capturedTools).toEqual(["read", "grep", "find", "ls", "bash"]);
-    expect(state.fullTools).toBe(capturedTools);
-    expect(setActiveToolsCalls.at(-1)).toEqual(["read", "grep", "find", "ls", "bash"]);
+    const applied = setActiveToolsCalls.at(-1);
+    expect(applied).toContain("read");
+    expect(applied).toContain("bash");
+    expect(applied).toContain(DELEGATE_TOOL);
+    expect(applied).not.toContain("edit");
+    expect(applied).not.toContain("write");
     expect(entries.at(-1)).toMatchObject({
       customType: PERSIST_KEY,
       data: { v: 1, enabled: true, config: baseConfig },
     });
   });
 
-  it("enable drops desired orchestrator tools that the host does not know", () => {
+  it("enable preserves tools from other extensions", () => {
     const { pi, setActiveToolsCalls } = makeMockPi({
-      knownTools: ["read", "grep", "find", "ls"],
+      initialTools: ["read", "bash", "edit", "write", "custom_ext_tool"],
     });
     const state = createBrainState(baseConfig);
 
     enable(pi, state);
 
-    expect(setActiveToolsCalls.at(-1)).toEqual(["read", "grep", "find", "ls"]);
-    expect(setActiveToolsCalls.at(-1)).not.toContain("bash");
+    const applied = setActiveToolsCalls.at(-1);
+    expect(applied).toContain("custom_ext_tool");
+    expect(applied).toContain(DELEGATE_TOOL);
+    expect(applied).not.toContain("edit");
+    expect(applied).not.toContain("write");
   });
 
-  it("includes delegate_to_reviewer in orchestratorToolset only when reviewer is enabled", () => {
-    expect(orchestratorToolset({ ...baseConfig, reviewerEnabled: true })).toContain(REVIEWER_TOOL);
-    expect(orchestratorToolset({ ...baseConfig, reviewerEnabled: false })).not.toContain(
+  it("includes delegate_to_reviewer in applyBrainTools only when reviewer is enabled", () => {
+    const base = ["read", "bash", "edit", "write"];
+    expect(applyBrainTools(base, { ...baseConfig, reviewerEnabled: true }, true)).toContain(
+      REVIEWER_TOOL,
+    );
+    expect(applyBrainTools(base, { ...baseConfig, reviewerEnabled: false }, true)).not.toContain(
       REVIEWER_TOOL,
     );
   });
@@ -65,7 +80,7 @@ describe("brain state machine", () => {
     expect(setActiveToolsCalls.at(-1)).toContain("delegate_to_coder");
   });
 
-  it("disable restores captured fullTools instead of a hardcoded default", async () => {
+  it("disable restores edit/write/bash and removes brain tools", async () => {
     const initialTools = ["read", "bash", "edit", "write", "custom"];
     const { pi, ctx, commands, setActiveToolsCalls } = makeMockPi({ initialTools });
     const state = createBrainState(baseConfig);
@@ -77,7 +92,13 @@ describe("brain state machine", () => {
     await brain.handler("on", ctx);
     await brain.handler("off", ctx);
 
-    expect(setActiveToolsCalls.at(-1)).toEqual(initialTools);
+    const restored = setActiveToolsCalls.at(-1);
+    expect(restored).toContain("edit");
+    expect(restored).toContain("write");
+    expect(restored).toContain("bash");
+    expect(restored).toContain("custom");
+    expect(restored).not.toContain(DELEGATE_TOOL);
+    expect(restored).not.toContain(REVIEWER_TOOL);
   });
 
   it.each(sessionReasons)(
@@ -93,7 +114,10 @@ describe("brain state machine", () => {
 
       expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
       expect(state.enabled).toBe(true);
-      expect(setActiveToolsCalls.at(-1)).toEqual(orchestratorToolset(baseConfig));
+      const applied = setActiveToolsCalls.at(-1);
+      expect(applied).toContain(DELEGATE_TOOL);
+      expect(applied).not.toContain("edit");
+      expect(applied).not.toContain("write");
     },
   );
 
@@ -135,25 +159,32 @@ describe("brain state machine", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("applies a no-bash orchestrator toolset when brain-no-bash is set", () => {
-    const { pi, setActiveToolsCalls } = makeMockPi({ flags: { "brain-no-bash": true } });
+  it("applies a no-bash toolset when brain-no-bash is set", () => {
+    const { pi, setActiveToolsCalls } = makeMockPi({
+      flags: { "brain-no-bash": true },
+      initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    });
     registerBrainFlags(pi);
     const state = createBrainState(resolveConfig(pi, baseConfig));
 
     enable(pi, state);
 
     expect(state.config.allowBash).toBe(false);
-    expect(setActiveToolsCalls.at(-1)).toEqual(["read", "grep", "find", "ls"]);
     expect(setActiveToolsCalls.at(-1)).not.toContain("bash");
+    expect(setActiveToolsCalls.at(-1)).not.toContain("edit");
+    expect(setActiveToolsCalls.at(-1)).not.toContain("write");
+    expect(setActiveToolsCalls.at(-1)).toContain(DELEGATE_TOOL);
   });
 
   it("keeps brain-no-bash hard-off over persisted bash config on session_start", async () => {
     const { pi, setActiveToolsCalls, dispatch } = makeMockPi({
       flags: { "brain-no-bash": true },
+      initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
     });
     registerBrainFlags(pi);
     const state = createBrainState(baseConfig);
     registerBrainEvents(pi, state);
+    registerDelegateTool(pi, state);
     pi.appendEntry(PERSIST_KEY, {
       v: 1,
       enabled: true,
@@ -163,8 +194,9 @@ describe("brain state machine", () => {
     await dispatch("session_start", { reason: "resume" });
 
     expect(state.config.allowBash).toBe(false);
-    expect(setActiveToolsCalls.at(-1)).toEqual(["read", "grep", "find", "ls"]);
     expect(setActiveToolsCalls.at(-1)).not.toContain("bash");
+    expect(setActiveToolsCalls.at(-1)).not.toContain("edit");
+    expect(setActiveToolsCalls.at(-1)).toContain(DELEGATE_TOOL);
   });
 
   it("keeps brain-worker-model over persisted worker model on session_start", async () => {
