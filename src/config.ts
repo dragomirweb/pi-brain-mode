@@ -5,7 +5,7 @@ import type { BrainConfig } from "./state.ts";
 const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
 const DEFAULT_REVIEWER_MODEL = "";
-const DEFAULT_WORKER_TIMEOUT = 180_000;
+const DEFAULT_WORKER_TIMEOUT = 600_000;
 const MIN_WORKER_TIMEOUT = 30_000;
 
 export const DEFAULT_CONFIG: BrainConfig = {
