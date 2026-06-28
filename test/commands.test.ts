@@ -253,34 +253,34 @@ describe("/brain settings menu", () => {
     expect(state.enabled).toBe(false);
   });
 
-  it("changes the worker model via the menu", async () => {
-    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+  it("changes the worker model via the model picker", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
 
-    selectResponses.push("Worker model \u2014 openai-codex/gpt-5.5");
-    inputResponses.push("claude/opus-4-8");
-    selectResponses.push(undefined);
+    selectResponses.push("Worker model \u2014 openai-codex/gpt-5.5"); // main menu
+    selectResponses.push("claude/opus-4-8"); // model picker
+    selectResponses.push(undefined); // dismiss main menu
     await brain.handler("", ctx);
 
     expect(state.config.workerModel).toBe("claude/opus-4-8");
   });
 
-  it("changes fallback models via the menu", async () => {
-    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+  it("changes fallback models via the fallback picker", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
 
-    selectResponses.push("Fallback models \u2014 claude/opus-4-8");
-    inputResponses.push("anthropic/claude-sonnet-4");
-    selectResponses.push(undefined);
+    selectResponses.push("Fallback models \u2014 claude/opus-4-8"); // main menu
+    selectResponses.push("\u26aa anthropic/claude-sonnet-4"); // toggle on
+    selectResponses.push(undefined); // dismiss main menu
     await brain.handler("", ctx);
 
-    expect(state.config.fallbackModels).toEqual(["anthropic/claude-sonnet-4"]);
+    expect(state.config.fallbackModels).toContain("anthropic/claude-sonnet-4");
   });
 
-  it("clears fallback models when 'none' is entered", async () => {
-    const { brain, ctx, state, selectResponses, inputResponses } = setup({ hasUI: true });
+  it("clears fallback models via the fallback picker", async () => {
+    const { brain, ctx, state, selectResponses } = setup({ hasUI: true });
 
-    selectResponses.push("Fallback models \u2014 claude/opus-4-8");
-    inputResponses.push("none");
-    selectResponses.push(undefined);
+    selectResponses.push("Fallback models \u2014 claude/opus-4-8"); // main menu
+    selectResponses.push("Clear all fallbacks"); // clear
+    selectResponses.push(undefined); // dismiss main menu
     await brain.handler("", ctx);
 
     expect(state.config.fallbackModels).toEqual([]);
