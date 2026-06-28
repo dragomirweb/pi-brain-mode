@@ -19,7 +19,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: true,
   reviewerModel: "claude-opus-4-8",
-  workerTimeout: 180_000,
+  workerTimeout: 600_000,
 };
 
 class FakeChild extends EventEmitter {
@@ -71,7 +71,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setSpawnTimeoutMs(180_000);
+  setSpawnTimeoutMs(600_000);
   vi.clearAllMocks();
 });
 
