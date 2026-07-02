@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerDelegateTool } from "../src/delegate.ts";
 import { createBrainState } from "../src/state.ts";
-import { setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
+import { resetBridgeDetection, setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
 import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -21,6 +21,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
+  autoReview: false,
 };
 
 class FakeChild extends EventEmitter {
@@ -72,12 +73,14 @@ beforeEach(() => {
 });
 
 beforeEach(() => {
+  resetBridgeDetection();
   setBridgeDetectTimeoutMs(0);
 });
 
 afterEach(() => {
   setSpawnTimeoutMs(600_000);
   setBridgeDetectTimeoutMs(5_000);
+  resetBridgeDetection();
   vi.clearAllMocks();
 });
 
@@ -146,6 +149,41 @@ describe("delegate_to_coder", () => {
     expect(call.options.env?.PI_BRAIN_WORKER).toBe("1");
     expect(call.options.cwd).toBe("/tmp/project");
     expect(onUpdate).toHaveBeenCalled();
+  });
+
+  it("streams accumulated worker commentary in fallback updates", async () => {
+    const { tool, ctx } = makeRegisteredTool(true);
+    const onUpdate = vi.fn();
+
+    const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, onUpdate, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Step one done, moving to the edit." }],
+      },
+    });
+    children[0].pushStdout({
+      type: "tool_execution_start",
+      toolName: "edit",
+      args: { path: "src/a.ts" },
+    });
+
+    await vi.waitFor(() => expect(onUpdate.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const update = onUpdate.mock.calls.at(-1)?.[0] as { content: [{ text: string }] };
+    const text = update.content[0].text;
+    // The status header updates while earlier commentary stays visible.
+    expect(text).toContain("Worker running edit src/a.ts");
+    expect(text).toContain("Step one done, moving to the edit.");
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].close(0);
+    await resultPromise;
   });
 
   it("throws with stderr tail when the worker exits nonzero", async () => {
@@ -417,18 +455,359 @@ describe("delegate_to_coder", () => {
     expect(positionalTask).toContain("- src/a.ts");
     expect(positionalTask).toContain("- docs/spec.md");
   });
+
+  it("uses the bridge result, runs the gate, and tracks session usage", async () => {
+    const { tool, pi, state, ctx } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+    respondViaBridge(pi, {
+      content: [{ type: "text", text: "Worker done: changed src/a.ts" }],
+      details: {
+        totalChildUsage: {
+          input: 100,
+          output: 2000,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.05,
+          turns: 1,
+        },
+        results: [{ changedFiles: ["src/a.ts"] }],
+      },
+    });
+
+    const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+
+    // Only the gate process spawns — the worker ran via the bridge.
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].close(0);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Worker done");
+    expect(text).toContain("PASS");
+    expect((result.details as { changedFiles?: string[] }).changedFiles).toEqual(["src/a.ts"]);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].command).toBe("npm run check");
+    expect(state.sessionUsage.runs).toBe(1);
+    expect(state.sessionUsage.cost).toBeCloseTo(0.05);
+  });
+
+  it("falls back to the spawner when the bridge reports an infra error", async () => {
+    const { tool, pi, ctx } = makeRegisteredTool(true);
+    respondViaBridge(
+      pi,
+      { content: [{ type: "text", text: "Unknown agent: brain-coder" }], details: {} },
+      true,
+      "Unknown agent: brain-coder",
+    );
+
+    const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "spawner succeeded" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      content: [{ type: "text", text: "spawner succeeded" }],
+    });
+    expect(modelArg(spawnCalls[0].args)).toBe(baseConfig.workerModel);
+  });
+
+  it("surfaces a bridge task failure with a warning and still runs the gate", async () => {
+    const { tool, pi, ctx } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+    respondViaBridge(
+      pi,
+      { content: [{ type: "text", text: "Worker crashed mid-task" }], details: {} },
+      true,
+      "Worker crashed mid-task",
+    );
+
+    const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+
+    // Only the gate spawns — no fallback worker for a genuine task failure.
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStderr("tsc: 3 errors");
+    children[0].close(1);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Delegation failed");
+    expect(text).toContain("Worker crashed mid-task");
+    expect(text).toContain("FAIL");
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].command).toBe("npm run check");
+  });
+
+  it("runs read-only delegations with a restricted toolset and no gate", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "run the test suite and report", readOnly: true },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "190/190 tests pass" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("190/190 tests pass");
+    expect(text).not.toContain("Quality gate");
+    // Only the runner spawned — no gate process even though a gate is configured.
+    expect(spawnCalls).toHaveLength(1);
+    const call = spawnCalls[0];
+    expect(call.args.at(call.args.indexOf("--tools") + 1)).toBe("read,grep,find,ls,bash");
+    expect(state.journal.at(-1)).toMatchObject({ kind: "run", gate: "none" });
+  });
+
+  it("feeds the previous gate failure into the next delegation", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+
+    const first = tool.execute("call-1", { task: "first change" }, undefined, undefined, ctx);
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].close(0);
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].pushStderr("tsc: 2 type errors");
+    children[1].close(1);
+    await first;
+
+    expect(state.lastGate).toMatchObject({ ok: false, command: "npm run check" });
+    expect(state.consecutiveGateFailures).toBe(1);
+    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "fail" });
+
+    const second = tool.execute("call-2", { task: "fix the errors" }, undefined, undefined, ctx);
+    await vi.waitFor(() => expect(children).toHaveLength(3));
+    const positionalTask = spawnCalls[2].args.at(-1);
+    expect(positionalTask).toContain("Previous attempt context");
+    expect(positionalTask).toContain("tsc: 2 type errors");
+
+    children[2].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "fixed" }], stopReason: "end" },
+    });
+    children[2].close(0);
+    await vi.waitFor(() => expect(children).toHaveLength(4));
+    children[3].close(0);
+    await second;
+
+    expect(state.lastGate).toMatchObject({ ok: true });
+    expect(state.consecutiveGateFailures).toBe(0);
+  });
+
+  it("nudges to split or escalate after two consecutive gate failures", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+
+    const runFailing = async (call: string) => {
+      const workerIndex = children.length;
+      const promise = tool.execute(call, { task: "change something" }, undefined, undefined, ctx);
+      await vi.waitFor(() => expect(children).toHaveLength(workerIndex + 1));
+      children[workerIndex].pushStdout({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          stopReason: "end",
+        },
+      });
+      children[workerIndex].close(0);
+      await vi.waitFor(() => expect(children).toHaveLength(workerIndex + 2));
+      children[workerIndex + 1].pushStderr("still failing");
+      children[workerIndex + 1].close(1);
+      return promise;
+    };
+
+    await runFailing("call-1");
+    const result = await runFailing("call-2");
+
+    expect(state.consecutiveGateFailures).toBe(2);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("2 consecutive delegations failed the quality gate");
+    expect(text).toContain("/brain worker");
+  });
+
+  it("auto-reviews a successful delegation and records the verdict", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      { "brain-gate-command": "npm run check" },
+      { reviewerEnabled: true, autoReview: true },
+    );
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "add feature" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "tool_execution_end",
+      toolName: "edit",
+      args: { path: "src/a.ts" },
+      isError: false,
+    });
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "changed src/a.ts" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    // Gate passes…
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].close(0);
+
+    // …then the reviewer runs automatically.
+    await vi.waitFor(() => expect(children).toHaveLength(3));
+    const reviewTask = spawnCalls[2].args.at(-1);
+    expect(reviewTask).toContain("add feature");
+    expect(reviewTask).toContain("- src/a.ts");
+    expect(reviewTask).toContain("Quality gate (already run");
+    children[2].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: warn\nFINDINGS: minor nit" }],
+        stopReason: "end",
+      },
+    });
+    children[2].close(0);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Quality gate");
+    expect(text).toContain("Independent review");
+    expect(text).toContain("VERDICT: warn");
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "coder",
+      gate: "pass",
+      verdict: "warn",
+      changedFiles: ["src/a.ts"],
+    });
+  });
+
+  it("skips the auto-review when the gate fails", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      { "brain-gate-command": "npm run check" },
+      { reviewerEnabled: true, autoReview: true },
+    );
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "add feature" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].close(0);
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].pushStderr("broken");
+    children[1].close(1);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("FAIL");
+    expect(text).not.toContain("Independent review");
+    // Worker + gate only — the reviewer was not spawned.
+    expect(spawnCalls).toHaveLength(2);
+    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "fail", verdict: null });
+  });
+
+  it("skips the quality gate when the delegation is aborted", async () => {
+    const { tool, ctx } = makeRegisteredTool(true, "/tmp/project", {
+      "brain-gate-command": "npm run check",
+    });
+    const abortController = new AbortController();
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "do it" },
+      abortController.signal,
+      undefined,
+      ctx,
+    );
+    abortController.abort();
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("aborted");
+    expect(text).not.toContain("Quality gate");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 });
 
-function makeRegisteredTool(enabled: boolean, cwd = "/tmp/cwd", flags?: Record<string, unknown>) {
+function makeRegisteredTool(
+  enabled: boolean,
+  cwd = "/tmp/cwd",
+  flags?: Record<string, unknown>,
+  configOverrides?: Partial<typeof baseConfig>,
+) {
   const { pi, tools } = makeMockPi({ cwd, flags: flags as Record<string, boolean | string> });
-  const state = createBrainState(baseConfig);
+  const state = createBrainState({ ...baseConfig, ...configOverrides });
   state.enabled = enabled;
   registerDelegateTool(pi, state);
 
   const tool = tools.get("delegate_to_coder");
   if (!tool) throw new Error("delegate_to_coder was not registered");
 
-  return { tool, ctx: { cwd } as ExtensionContext };
+  return { tool, pi, state, ctx: { cwd } as ExtensionContext };
+}
+
+/** Make the mock event bus answer the next bridge request like pi-subagents would. */
+function respondViaBridge(
+  pi: ReturnType<typeof makeMockPi>["pi"],
+  result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> },
+  isError = false,
+  errorText?: string,
+) {
+  pi.events.on("subagent:slash:request", (data: unknown) => {
+    const { requestId } = data as { requestId: string };
+    pi.events.emit("subagent:slash:started", { requestId });
+    pi.events.emit("subagent:slash:response", { requestId, result, isError, errorText });
+  });
 }
 
 function modelArg(args: string[]): string | undefined {

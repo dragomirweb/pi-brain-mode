@@ -12,12 +12,21 @@ export const DelegateParams = Type.Object({
   reads: Type.Optional(
     Type.Array(Type.String(), { description: "Paths the worker should read for context." }),
   ),
+  readOnly: Type.Optional(
+    Type.Boolean({
+      description:
+        "Verification mode: the worker gets NO edit/write tools. Use to run tests/commands and report output. Skips the quality gate and auto-review.",
+    }),
+  ),
 });
 
 export const ReviewParams = Type.Object({
-  intent: Type.String({
-    description: "What the coder's change was supposed to accomplish (the original task).",
-  }),
+  intent: Type.Optional(
+    Type.String({
+      description:
+        "What the coder's change was supposed to accomplish. Defaults to the most recent delegated task.",
+    }),
+  ),
   acceptanceCriteria: Type.Optional(
     Type.String({ description: "Concrete criteria the change must meet." }),
   ),
@@ -25,8 +34,34 @@ export const ReviewParams = Type.Object({
   base: Type.Optional(
     Type.String({ description: "Git ref to diff against (default: current uncommitted changes)." }),
   ),
-  reads: Type.Optional(Type.Array(Type.String(), { description: "Extra context paths." })),
+  reads: Type.Optional(
+    Type.Array(Type.String(), {
+      description: "Extra context paths. Defaults to the last delegation's changed files.",
+    }),
+  ),
 });
+
+/** Compact journal block re-anchored into the system prompt every turn. */
+export function recentDelegationsSection(state: BrainState): string {
+  if (state.journal.length === 0) return "";
+  const recent = state.journal.slice(-8);
+  const lines = recent.map((r) => {
+    const files =
+      r.changedFiles.length > 0
+        ? ` → ${r.changedFiles.slice(0, 5).join(", ")}${r.changedFiles.length > 5 ? ", …" : ""}`
+        : "";
+    const gate = r.gate === "none" ? "" : ` — gate ${r.gate.toUpperCase()}`;
+    const verdict = r.verdict ? ` — review ${r.verdict.toUpperCase()}` : "";
+    return `- [${r.kind}] ${r.task}${files}${gate}${verdict}`;
+  });
+  return `
+
+## Recent delegations this session (oldest first)
+${lines.join("\n")}
+
+This journal survives context compaction — trust it over your recollection of
+earlier turns. Do not re-delegate work it already shows as done; verify instead.`;
+}
 
 export function brainSystemAddendum(state: BrainState): string {
   const bashRule = state.config.allowBash
@@ -71,20 +106,36 @@ Splitting large work:
 How to verify a delegated change:
 - A quality gate (e.g. \`npm run check\`) runs AUTOMATICALLY after each delegation —
   read the "Quality gate: PASS/FAIL" line in the result. FAIL means it is NOT done;
-  re-delegate a fix with the gate output.
-- READ the changed files and check them against the acceptance criteria.
-- To run the code EMPIRICALLY (you cannot execute it yourself), delegate a READ-ONLY
-  run to the coder ("run X and paste the output verbatim; do NOT modify any files")${
-    state.config.reviewerEnabled
-      ? `, or call \`delegate_to_reviewer\` (an independent agent on the orchestrator's
-  model that runs the gate + fallow and returns a pass/warn/fail verdict)`
+  re-delegate a fix with the gate output.${
+    state.config.reviewerEnabled && state.config.autoReview
+      ? `
+- An INDEPENDENT REVIEW also runs automatically after each successful delegation —
+  read its VERDICT (pass/warn/fail) and findings. On fail, re-delegate a fix.`
       : ""
-  }.
+  }
+- READ the changed files and check them against the acceptance criteria.
+- To run the code EMPIRICALLY (you cannot execute it yourself), call
+  \`delegate_to_coder\` with \`readOnly: true\` ("run X and report the output
+  verbatim") — the worker gets no edit/write tools, so the run cannot mutate.${
+    state.config.reviewerEnabled
+      ? `
+- Call \`delegate_to_reviewer\` for a${state.config.autoReview ? "n extra" : "n independent"}
+  deep-dive review${state.config.autoReview ? " on demand" : ""} — it verifies the diff
+  against the intent and returns a pass/warn/fail verdict. \`intent\` and \`reads\`
+  default to the last delegation.`
+      : ""
+  }
 
 Do not attempt edit/write or mutating bash directly; they are blocked.
-Your loop: PLAN → delegate_to_coder → read the gate result + changed files${
-    state.config.reviewerEnabled ? " → optionally delegate_to_reviewer" : ""
-  } → re-delegate any fixes → done.`;
+Your loop: PLAN → delegate_to_coder${
+    state.config.reviewerEnabled && state.config.autoReview
+      ? " (gate + independent review run automatically; read both)"
+      : " → read the gate result + changed files"
+  }${
+    state.config.reviewerEnabled && !state.config.autoReview
+      ? " → optionally delegate_to_reviewer"
+      : ""
+  } → re-delegate any fixes → done.${recentDelegationsSection(state)}`;
 }
 
 export function delegateToolDescription(): string {
@@ -99,6 +150,9 @@ Provide:
 - \`plan\`: (recommended) intent, affected files, constraints, and acceptance
   criteria. Passed to the worker as context.
 - \`reads\`: (optional) paths the worker should read for context.
+- \`readOnly\`: (optional) verification mode — the worker gets NO edit/write tools.
+  Use it to run tests or commands empirically and report output; the quality gate
+  and auto-review are skipped since nothing can change.
 
 Batch related changes into a single call (each call spawns a full worker
 process). Returns the worker's summary of what it changed (or throws on
@@ -116,11 +170,13 @@ and tests, and run fallow). Use it AFTER delegate_to_coder when you want a secon
 opinion or deeper verification than reading the diff yourself.
 
 Provide:
-- \`intent\`: what the change was supposed to accomplish (the original task).
+- \`intent\`: (optional) what the change was supposed to accomplish — defaults to
+  the most recent delegated task.
 - \`acceptanceCriteria\`: (recommended) the concrete criteria the change must meet.
 - \`focus\`: (optional) specific things to scrutinize.
 - \`base\`: (optional) git ref to diff against (default: current uncommitted changes).
-- \`reads\`: (optional) extra context paths.
+- \`reads\`: (optional) extra context paths — defaults to the last delegation's
+  changed files.
 
 The reviewer runs the project quality gate + fallow (if present), judges the diff
 against the criteria, may apply only trivial mechanical fixes, and returns a
@@ -139,7 +195,8 @@ Steps:
    base ref is given) to see EXACTLY what changed.
 2. Run the project's quality gate and report the REAL result: prefer \`npm run check\`;
    otherwise run whatever lint/typecheck/test scripts exist (see package.json). Paste
-   the actual pass/fail.
+   the actual pass/fail. If the task already includes a fresh gate result from the
+   orchestrator, you may spot-check instead of fully re-running a passing gate.
 3. If \`fallow\` is available (check \`node_modules/.bin/fallow\`, then \`fallow\` on PATH,
    then \`npx --no-install fallow\`), run \`fallow audit\` on the changed code and fold its
    findings in. If fallow is not present, skip it silently — it is optional.
@@ -168,8 +225,22 @@ to you. Implement it precisely and completely.
 - Read any plan/context files mentioned in the task first.
 - Make the necessary file edits and run any needed commands.
 - Do not ask questions — use your best judgment consistent with the plan.
+- Before finishing, run the project's quality gate if one exists (\`npm run check\`,
+  or its lint/typecheck/test scripts) and FIX any failures you introduced — the
+  orchestrator re-runs it after you and a failure sends the task back to you.
 - When done, briefly summarize EXACTLY what you changed (files + a short
   description of each change) so the orchestrator can verify.`;
+}
+
+export function runnerSystemPrompt(): string {
+  return `You are a read-only RUNNER. A separate orchestrator has delegated a verification
+task to you: run commands or tests and report what happened. You have NO edit or
+write tools — do not attempt to modify anything.
+
+- Run the requested commands and read the requested files.
+- Report the relevant command output VERBATIM (trim only unrelated noise).
+- End with a 1-3 line interpretation: pass/fail, key numbers, notable errors.
+- If something needs fixing, report it as a finding — do not fix it yourself.`;
 }
 
 export function blockMutation(toolName: string): string {
@@ -195,10 +266,17 @@ export function brainDisabled(): string {
 
 export function brainUsage(): string {
   return `/brain — open settings menu
-/brain on|off|status|help
+/brain on|off|status|log|help
 /brain worker|thinking <model-id>
 /brain fallback <id[,id]|none>
-/brain reviewer on|off|auto|<model-id>`;
+/brain reviewer on|off|always|manual|auto|<model-id>
+  (always/manual toggle auto-review; auto = use the orchestrator model)`;
+}
+
+export function formatSessionSpend(state: BrainState): string {
+  const u = state.sessionUsage;
+  const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+  return `${u.runs} run${u.runs === 1 ? "" : "s"} — $${u.cost.toFixed(2)} (${tokens(u.input)} in / ${tokens(u.output)} out)`;
 }
 
 export function statusLine(state: BrainState, thinkingModelId: string): string {
@@ -209,12 +287,34 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
       : "";
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
   const reviewerModelLabel = state.config.reviewerModel || `${thinkingModelId} (orchestrator)`;
-  const reviewerMode = state.config.reviewerEnabled ? `ON (${reviewerModelLabel})` : "OFF";
+  const reviewerMode = state.config.reviewerEnabled
+    ? `ON (${reviewerModelLabel}, auto-review ${state.config.autoReview ? "ON" : "OFF"})`
+    : "OFF";
+  const spendLine =
+    state.sessionUsage.runs > 0 ? `\nSession delegations: ${formatSessionSpend(state)}` : "";
   return `Brain Mode: ${mode}
 Thinking model: ${thinkingModelId}
 Worker model: ${state.config.workerModel}${fallbackSuffix}
 Reviewer: ${reviewerMode}
-Orchestrator bash: ${bashMode}`;
+Orchestrator bash: ${bashMode}${spendLine}`;
+}
+
+export function journalText(state: BrainState): string {
+  if (state.journal.length === 0) return "No delegations recorded this session.";
+  const lines = state.journal.map((r, i) => {
+    const files = r.changedFiles.length > 0 ? ` → ${r.changedFiles.join(", ")}` : "";
+    const gate = r.gate === "none" ? "" : ` — gate ${r.gate.toUpperCase()}`;
+    const verdict = r.verdict ? ` — review ${r.verdict.toUpperCase()}` : "";
+    const cost = r.cost > 0 ? ` ($${r.cost.toFixed(2)})` : "";
+    return `${i + 1}. [${r.kind}] ${r.task}${files}${gate}${verdict}${cost}`;
+  });
+  return `Delegation log (${state.journal.length}):\n${lines.join("\n")}`;
+}
+
+export function autoReviewSet(state: BrainState): string {
+  return state.config.autoReview
+    ? "Auto-review ON: each successful delegation is independently reviewed."
+    : "Auto-review OFF: call delegate_to_reviewer manually when you want a review.";
 }
 
 export function workerModelSet(state: BrainState): string {

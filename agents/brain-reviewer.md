@@ -20,7 +20,8 @@ Steps:
    base ref is given) to see EXACTLY what changed.
 2. Run the project's quality gate and report the REAL result: prefer `npm run check`;
    otherwise run whatever lint/typecheck/test scripts exist (see package.json). Paste
-   the actual pass/fail.
+   the actual pass/fail. If the task already includes a fresh gate result from the
+   orchestrator, you may spot-check instead of fully re-running a passing gate.
 3. If `fallow` is available (check `node_modules/.bin/fallow`, then `fallow` on PATH,
    then `npx --no-install fallow`), run `fallow audit` on the changed code and fold its
    findings in. If fallow is not present, skip it silently — it is optional.

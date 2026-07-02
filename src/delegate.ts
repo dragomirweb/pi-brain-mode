@@ -10,8 +10,22 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 
-import { DelegateParams, delegateToolDescription, workerSystemPrompt } from "./prompts.ts";
-import { type BrainState, DELEGATE_TOOL } from "./state.ts";
+import { persist } from "./persistence.ts";
+import {
+  DelegateParams,
+  delegateToolDescription,
+  runnerSystemPrompt,
+  workerSystemPrompt,
+} from "./prompts.ts";
+import { runReview } from "./reviewer.ts";
+import {
+  type BrainState,
+  DELEGATE_TOOL,
+  type ReviewVerdict,
+  recordDelegation,
+  summarizeTask,
+  trackUsage,
+} from "./state.ts";
 import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
 import {
   type WorkerDetails,
@@ -25,6 +39,13 @@ import {
 type DelegateParamsT = Static<typeof DelegateParams>;
 
 const gateTimeoutMs = 480_000;
+
+interface GateResult {
+  ran: boolean;
+  ok: boolean;
+  command: string;
+  output: string;
+}
 
 export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void {
   pi.registerTool({
@@ -45,29 +66,63 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
         throw new Error("delegate_to_coder is only available in Brain Mode. Run /brain on first.");
       }
 
-      const gateCommand = resolveGateCommand(pi, ctx.cwd);
+      const readOnly = params.readOnly === true;
+      const gateCommand = readOnly ? null : resolveGateCommand(pi, ctx.cwd);
+      const previousFailure = readOnly ? undefined : previousFailureSection(state);
 
       // Try pi-subagents bridge first — returns null if not installed.
       const bridgeTask = buildBridgeTask(
         `Task: ${params.task}`,
-        params.plan ? `## Plan\n${params.plan}` : undefined,
+        combineContext(params.plan ? `## Plan\n${params.plan}` : undefined, previousFailure),
         params.reads ?? [],
       );
-      const bridgeResult = await runViaBridge(
+      const bridgeOutcome = await runViaBridge(
         pi,
         ctx,
-        "brain-coder",
+        readOnly ? "brain-runner" : "brain-coder",
         bridgeTask,
         state.config.workerModel,
         signal,
         onUpdate,
       );
-      if (bridgeResult) {
-        const gate = await runGate(ctx.cwd, gateCommand, signal);
-        return withGate(bridgeResult, gate);
+      if (bridgeOutcome?.kind === "aborted") {
+        return bridgeOutcome.result;
       }
+      if (bridgeOutcome?.kind === "success") {
+        trackUsage(state, bridgeOutcome.result.details.usage);
+        return finalizeDelegation(
+          pi,
+          state,
+          ctx,
+          params,
+          readOnly,
+          gateCommand,
+          bridgeOutcome.result,
+          false,
+          signal,
+          onUpdate,
+        );
+      }
+      if (bridgeOutcome?.kind === "error" && !bridgeOutcome.infra) {
+        // Genuine task failure — the worker may have left files half-changed,
+        // so still run the gate and tell the orchestrator how to recover.
+        trackUsage(state, bridgeOutcome.result.details.usage);
+        return finalizeDelegation(
+          pi,
+          state,
+          ctx,
+          params,
+          readOnly,
+          gateCommand,
+          formatBridgeFailure(bridgeOutcome.result, bridgeOutcome.errorText),
+          true,
+          signal,
+          onUpdate,
+        );
+      }
+      // null (bridge absent) or infra error (unknown agent / model unavailable):
+      // the fallback spawner below is likely to succeed.
 
-      // Fallback: direct process spawn with model chain.
       const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
       let lastErr: Error | null = null;
 
@@ -75,18 +130,41 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
         try {
           const result = await runSubagent(
             model,
-            workerSystemPrompt(),
-            assembleTask(params),
-            "read,edit,write,bash",
+            readOnly ? runnerSystemPrompt() : workerSystemPrompt(),
+            assembleTask(params, previousFailure),
+            readOnly ? "read,grep,find,ls,bash" : "read,edit,write,bash",
             signal,
             onUpdate,
             ctx.cwd,
           );
-          const gate = await runGate(ctx.cwd, gateCommand, signal);
-          return withGate(result, gate);
+          trackUsage(state, result.details?.usage);
+          return finalizeDelegation(
+            pi,
+            state,
+            ctx,
+            params,
+            readOnly,
+            gateCommand,
+            result,
+            false,
+            signal,
+            onUpdate,
+          );
         } catch (err) {
           if (err instanceof WorkerTimeoutError) {
-            return formatTimeoutResult(err);
+            trackUsage(state, err.partialResult.details?.usage);
+            const result = formatTimeoutResult(err);
+            recordDelegation(state, {
+              kind: readOnly ? "run" : "coder",
+              task: summarizeTask(params.task),
+              changedFiles: result.details?.changedFiles ?? [],
+              gate: "none",
+              verdict: null,
+              cost: result.details?.usage?.cost ?? 0,
+              at: new Date().toISOString(),
+            });
+            persist(pi, state);
+            return result;
           }
           lastErr = toError(err);
           if (!isModelUnavailable(lastErr)) throw lastErr;
@@ -98,6 +176,81 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
       );
     },
   });
+}
+
+/**
+ * Post-delegation pipeline: quality gate → failure bookkeeping/escalation →
+ * auto-review → journal + persist.
+ */
+async function finalizeDelegation(
+  pi: ExtensionAPI,
+  state: BrainState,
+  ctx: ExtensionContext,
+  params: DelegateParamsT,
+  readOnly: boolean,
+  gateCommand: string | null,
+  result: AgentToolResult<WorkerDetails>,
+  workerFailed: boolean,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<WorkerDetails> | undefined,
+): Promise<AgentToolResult<WorkerDetails>> {
+  const gate = await runGate(ctx.cwd, gateCommand, signal);
+  if (gate.ran) {
+    state.lastGate = { ok: gate.ok, command: gate.command, output: tail(gate.output, 1500) };
+    state.consecutiveGateFailures = gate.ok ? 0 : state.consecutiveGateFailures + 1;
+  }
+
+  let final = withGate(result, gate);
+
+  if (gate.ran && !gate.ok && state.consecutiveGateFailures >= 2) {
+    final = appendText(
+      final,
+      `\n\n⚠️ ${state.consecutiveGateFailures} consecutive delegations failed the quality gate. Consider splitting the task into smaller delegations, or escalating the worker model (/brain worker <id>).`,
+    );
+  }
+
+  let verdict: ReviewVerdict | null = null;
+  const shouldAutoReview =
+    !readOnly &&
+    !workerFailed &&
+    state.config.reviewerEnabled &&
+    state.config.autoReview &&
+    (!gate.ran || gate.ok) &&
+    !signal?.aborted;
+
+  if (shouldAutoReview) {
+    const review = await runReview(
+      pi,
+      state,
+      ctx,
+      {
+        intent: params.task,
+        acceptanceCriteria: params.plan,
+        reads: result.details?.changedFiles ?? [],
+        gate: state.lastGate,
+      },
+      signal,
+      onUpdate,
+    );
+    verdict = review.verdict;
+    final = appendText(
+      final,
+      `\n\n---\n### Independent review (ran automatically)\n${textOf(review.result)}`,
+    );
+  }
+
+  recordDelegation(state, {
+    kind: readOnly ? "run" : "coder",
+    task: summarizeTask(params.task),
+    changedFiles: result.details?.changedFiles ?? [],
+    gate: gate.ran ? (gate.ok ? "pass" : "fail") : "none",
+    verdict,
+    cost: result.details?.usage?.cost ?? 0,
+    at: new Date().toISOString(),
+  });
+  persist(pi, state);
+
+  return final;
 }
 
 function resolveGateCommand(pi: ExtensionAPI, cwd: string): string | null {
@@ -125,8 +278,10 @@ async function runGate(
   cwd: string,
   command: string | null,
   signal: AbortSignal | undefined,
-): Promise<{ ran: boolean; ok: boolean; command: string; output: string }> {
-  if (!command) return { ran: false, ok: true, command: "", output: "" };
+): Promise<GateResult> {
+  // An already-aborted signal never fires its abort listener — bail up front
+  // instead of running the full gate after the user cancelled.
+  if (!command || signal?.aborted) return { ran: false, ok: true, command: "", output: "" };
 
   return new Promise((resolve) => {
     let output = "";
@@ -183,7 +338,7 @@ async function runGate(
 
 function withGate(
   result: AgentToolResult<WorkerDetails>,
-  gate: { ran: boolean; ok: boolean; command: string; output: string },
+  gate: GateResult,
 ): AgentToolResult<WorkerDetails> {
   if (!gate.ran) return result;
 
@@ -194,13 +349,33 @@ function withGate(
     ? ""
     : `\n${tail(gate.output, 1500) || "(no output)"}\n\nThe delegated changes do NOT pass the project gate — re-delegate a fix to the coder.`;
 
-  const existing =
-    result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+  return appendText(result, `\n\n---\n${header}${body}`);
+}
 
+function appendText(
+  result: AgentToolResult<WorkerDetails>,
+  text: string,
+): AgentToolResult<WorkerDetails> {
+  const existing = textOf(result);
   return {
     ...result,
-    content: [{ type: "text", text: `${existing}\n\n---\n${header}${body}` }],
+    content: [{ type: "text", text: `${existing}${text}` }],
   };
+}
+
+function textOf(result: AgentToolResult<WorkerDetails>): string {
+  return result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+}
+
+function formatBridgeFailure(
+  result: AgentToolResult<WorkerDetails>,
+  errorText: string,
+): AgentToolResult<WorkerDetails> {
+  const text = `⚠️ **Delegation failed** via pi-subagents: ${errorText}
+
+Files may have been partially changed — check \`git status\` and the quality gate
+below, then re-delegate the remaining work as a smaller, focused task.`;
+  return { ...result, content: [{ type: "text", text }] };
 }
 
 function formatTimeoutResult(err: WorkerTimeoutError): AgentToolResult<WorkerDetails> {
@@ -230,10 +405,28 @@ The worker was killed after the ${seconds}s timeout. To continue:
   };
 }
 
-function assembleTask(params: DelegateParamsT): string {
+/** Context block reminding the worker about the last failed gate, if any. */
+function previousFailureSection(state: BrainState): string | undefined {
+  if (!state.lastGate || state.lastGate.ok) return undefined;
+  return `## Previous attempt context
+The previous delegation in this session FAILED the quality gate (\`${state.lastGate.command}\`):
+\`\`\`
+${state.lastGate.output || "(no output)"}
+\`\`\`
+If your task is the fix, address these failures. Either way, your changes must
+pass this gate.`;
+}
+
+function combineContext(...parts: Array<string | undefined>): string | undefined {
+  const filtered = parts.filter((p): p is string => Boolean(p));
+  return filtered.length > 0 ? filtered.join("\n\n") : undefined;
+}
+
+function assembleTask(params: DelegateParamsT, previousFailure: string | undefined): string {
   let task = `Task: ${params.task}`;
 
   if (params.plan) task += `\n\n## Plan\n${params.plan}`;
+  if (previousFailure) task += `\n\n${previousFailure}`;
 
   if (params.reads?.length) {
     task += `\n\n## Read these files first for context\n${params.reads.map((path) => `- ${path}`).join("\n")}`;

@@ -24,6 +24,9 @@ export default function piBrain(pi: ExtensionAPI): void {
   registerBrainFlags(pi);
   const config = resolveConfig(pi, DEFAULT_CONFIG);
   const state = createBrainState(config);
+  // Brain Mode defaults ON (opt out with --brain-off). A persisted /brain off
+  // still wins on session_start; tools are applied there.
+  state.enabled = pi.getFlag("brain-off") !== true;
 
   registerBrainCommand(pi, state);
   registerBrainEvents(pi, state);

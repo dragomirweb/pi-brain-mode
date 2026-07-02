@@ -9,8 +9,9 @@ export const DEFAULT_CONFIG: BrainConfig = {
   workerModel: DEFAULT_WORKER_MODEL,
   fallbackModels: [...DEFAULT_FALLBACK_MODELS],
   allowBash: true,
-  reviewerEnabled: false,
+  reviewerEnabled: true,
   reviewerModel: DEFAULT_REVIEWER_MODEL,
+  autoReview: true,
 };
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
@@ -33,11 +34,23 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
   });
   pi.registerFlag("brain-reviewer", {
     type: "boolean",
-    description: "Enable the reviewer subagent (delegate_to_reviewer).",
+    description: "Enable the reviewer subagent (delegate_to_reviewer). Default: enabled.",
+  });
+  pi.registerFlag("brain-no-reviewer", {
+    type: "boolean",
+    description: "Disable the reviewer subagent.",
   });
   pi.registerFlag("brain-reviewer-model", {
     type: "string",
     description: "Reviewer model id (default: the orchestrator model).",
+  });
+  pi.registerFlag("brain-no-auto-review", {
+    type: "boolean",
+    description: "Do not automatically review each successful delegation.",
+  });
+  pi.registerFlag("brain-off", {
+    type: "boolean",
+    description: "Start with Brain Mode disabled (default: enabled).",
   });
 }
 
@@ -62,14 +75,22 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
     fallbackModels,
     allowBash: pi.getFlag("brain-no-bash") === true ? false : base.allowBash,
     reviewerEnabled:
-      pi.getFlag("brain-reviewer") === true
-        ? true
-        : typeof base.reviewerEnabled === "boolean"
-          ? base.reviewerEnabled
-          : false,
+      pi.getFlag("brain-no-reviewer") === true
+        ? false
+        : pi.getFlag("brain-reviewer") === true
+          ? true
+          : typeof base.reviewerEnabled === "boolean"
+            ? base.reviewerEnabled
+            : true,
     reviewerModel:
       typeof reviewerModelFlag === "string" && reviewerModelFlag.length > 0
         ? reviewerModelFlag
         : base.reviewerModel || DEFAULT_REVIEWER_MODEL,
+    autoReview:
+      pi.getFlag("brain-no-auto-review") === true
+        ? false
+        : typeof base.autoReview === "boolean"
+          ? base.autoReview
+          : true,
   };
 }

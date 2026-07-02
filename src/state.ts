@@ -10,15 +10,105 @@ export interface BrainConfig {
   allowBash: boolean;
   reviewerEnabled: boolean;
   reviewerModel: string;
+  /** Automatically chain an independent review after each successful delegation. */
+  autoReview: boolean;
 }
+
+/** Aggregate spend across all delegations in this session (not persisted). */
+export interface SessionUsage {
+  cost: number;
+  input: number;
+  output: number;
+  runs: number;
+}
+
+export type ReviewVerdict = "pass" | "warn" | "fail";
+
+/** One completed delegation, kept so the orchestrator survives compaction. */
+export interface DelegationRecord {
+  kind: "coder" | "run" | "reviewer";
+  /** First line of the delegated task, truncated. */
+  task: string;
+  changedFiles: string[];
+  gate: "pass" | "fail" | "none";
+  verdict: ReviewVerdict | null;
+  cost: number;
+  at: string;
+}
+
+/** Result of the most recent post-delegation quality gate run. */
+export interface LastGate {
+  ok: boolean;
+  command: string;
+  output: string;
+}
+
+/** Journal entries kept in state/persistence (the addendum renders fewer). */
+export const JOURNAL_LIMIT = 20;
 
 export interface BrainState {
   enabled: boolean;
   config: BrainConfig;
+  sessionUsage: SessionUsage;
+  journal: DelegationRecord[];
+  lastGate: LastGate | null;
+  consecutiveGateFailures: number;
 }
 
+export function emptySessionUsage(): SessionUsage {
+  return { cost: 0, input: 0, output: 0, runs: 0 };
+}
+
+/**
+ * Creates a new {@link BrainState} with Brain Mode disabled by default.
+ *
+ * @param config - The {@link BrainConfig} controlling worker model,
+ *   fallback models, bash access, and reviewer settings.
+ * @returns A `BrainState` object with `enabled` set to `false`.
+ */
 export function createBrainState(config: BrainConfig): BrainState {
-  return { enabled: false, config };
+  return {
+    enabled: false,
+    config,
+    sessionUsage: emptySessionUsage(),
+    journal: [],
+    lastGate: null,
+    consecutiveGateFailures: 0,
+  };
+}
+
+/** Append a delegation to the journal, keeping only the most recent entries. */
+export function recordDelegation(state: BrainState, record: DelegationRecord): void {
+  state.journal.push(record);
+  if (state.journal.length > JOURNAL_LIMIT) {
+    state.journal.splice(0, state.journal.length - JOURNAL_LIMIT);
+  }
+}
+
+/** The most recent coder delegation (not runs or reviews), if any. */
+export function lastCoderRecord(state: BrainState): DelegationRecord | undefined {
+  for (let i = state.journal.length - 1; i >= 0; i--) {
+    if (state.journal[i].kind === "coder") return state.journal[i];
+  }
+  return undefined;
+}
+
+/** Compact one-line summary of a delegated task for the journal. */
+export function summarizeTask(task: string, max = 100): string {
+  const firstLine = (task.split("\n").find((line) => line.trim()) ?? "").trim();
+  return firstLine.length > max ? `${firstLine.slice(0, max - 1)}…` : firstLine;
+}
+
+/** Fold one delegation's usage into the session total. */
+export function trackUsage(
+  state: BrainState,
+  usage: { cost?: number; input?: number; output?: number } | undefined,
+): void {
+  if (!usage) return;
+  state.sessionUsage.cost += usage.cost ?? 0;
+  state.sessionUsage.input += usage.input ?? 0;
+  state.sessionUsage.output += usage.output ?? 0;
+  state.sessionUsage.runs += 1;
 }
 
 /**
@@ -56,7 +146,8 @@ export function applyBrainTools(current: string[], config: BrainConfig, active: 
 export const PERSIST_KEY = "brain-v1";
 
 export interface BrainPersisted {
-  v: 1;
+  v: 2;
   enabled: boolean;
   config: BrainConfig;
+  journal: DelegationRecord[];
 }

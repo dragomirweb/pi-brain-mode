@@ -10,6 +10,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
+  autoReview: false,
 };
 
 const defaultModels = [
@@ -27,7 +28,7 @@ describe("/brain model configuration commands", () => {
     expect(state.config.workerModel).toBe("openai-codex/gpt-5.5");
     expect(entries.at(-1)).toMatchObject({
       customType: PERSIST_KEY,
-      data: { v: 1, config: { workerModel: "openai-codex/gpt-5.5" } },
+      data: { v: 2, config: { workerModel: "openai-codex/gpt-5.5" } },
     });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
@@ -126,7 +127,7 @@ describe("/brain model configuration commands", () => {
     expect(state.config.reviewerEnabled).toBe(true);
     expect(entries.at(-1)).toMatchObject({
       customType: PERSIST_KEY,
-      data: { v: 1, config: { reviewerEnabled: true } },
+      data: { v: 2, config: { reviewerEnabled: true } },
     });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
@@ -159,6 +160,39 @@ describe("/brain model configuration commands", () => {
     expect(state.config.reviewerModel).toBe("");
     expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
+  });
+
+  it("/brain reviewer always|manual toggles auto-review and persists", async () => {
+    const { brain, ctx, state, entries } = setup();
+
+    await brain.handler("reviewer always", ctx);
+    expect(state.config.autoReview).toBe(true);
+    expect(entries.at(-1)).toMatchObject({
+      customType: PERSIST_KEY,
+      data: { v: 2, config: { autoReview: true } },
+    });
+
+    await brain.handler("reviewer manual", ctx);
+    expect(state.config.autoReview).toBe(false);
+  });
+
+  it("/brain log shows the delegation journal", async () => {
+    const { brain, ctx, state, notifications } = setup();
+
+    await brain.handler("log", ctx);
+    expect(notifications.at(-1)?.msg ?? "").toContain("No delegations");
+
+    state.journal.push({
+      kind: "coder",
+      task: "fix the bug",
+      changedFiles: ["src/a.ts"],
+      gate: "pass",
+      verdict: "pass",
+      cost: 0.1,
+      at: "2026-07-02T00:00:00.000Z",
+    });
+    await brain.handler("log", ctx);
+    expect(notifications.at(-1)?.msg ?? "").toContain("[coder] fix the bug");
   });
 
   it("rejects an unknown reviewer model without mutating or persisting", async () => {
@@ -321,6 +355,7 @@ function setup(opts?: SetupOptions) {
     allowBash: baseConfig.allowBash,
     reviewerEnabled: baseConfig.reviewerEnabled,
     reviewerModel: baseConfig.reviewerModel,
+    autoReview: baseConfig.autoReview,
   });
   registerBrainCommand(mock.pi, state);
   const brain = mock.commands.get("brain");

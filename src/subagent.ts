@@ -40,6 +40,10 @@ export function setSpawnTimeoutMs(ms: number): void {
   spawnTimeoutMs = ms;
 }
 
+export function getSpawnTimeoutMs(): number {
+  return spawnTimeoutMs;
+}
+
 export async function runSubagent(
   model: string,
   systemPromptText: string,
@@ -60,6 +64,22 @@ export async function runSubagent(
   let stderr = "";
   let stopReason: string | undefined;
   let errorMessage: string | undefined;
+
+  // Live streaming view: a status header plus a rolling tail of the worker's
+  // own commentary, so updates accumulate instead of overwriting each other.
+  const liveLog: string[] = [];
+  let liveActivity = "(worker starting…)";
+  const pushLive = (text: string) => {
+    const lines = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return;
+    liveLog.push(...lines);
+    if (liveLog.length > 50) liveLog.splice(0, liveLog.length - 50);
+  };
+  const renderLive = (): string =>
+    [liveActivity, ...liveLog.slice(-6).map((line) => `  ${line}`)].join("\n");
 
   try {
     const exitCode = await new Promise<number>((resolve, reject) => {
@@ -126,15 +146,17 @@ export async function runSubagent(
             mergeUsage(usage, message.usage);
             if (typeof message.stopReason === "string") stopReason = message.stopReason;
             if (typeof message.errorMessage === "string") errorMessage = message.errorMessage;
+            pushLive(contentText(message.content));
           }
 
-          onUpdate?.(partialResult(getFinalText(messages) || "(running…)", usage, toolEvents));
+          onUpdate?.(partialResult(renderLive(), usage, toolEvents));
           return;
         }
 
         if (eventType === "tool_execution_start" || eventType === "tool_execution_end") {
           toolEvents.push(event);
-          onUpdate?.(partialResult(renderProgress(event), usage, toolEvents));
+          liveActivity = renderProgress(event);
+          onUpdate?.(partialResult(renderLive(), usage, toolEvents));
         }
       };
 

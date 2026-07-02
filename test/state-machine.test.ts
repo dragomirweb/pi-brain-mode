@@ -6,10 +6,15 @@ import { registerDelegateTool } from "../src/delegate.ts";
 import { registerBrainEvents } from "../src/events.ts";
 import {
   DELEGATE_TOOL,
+  type DelegationRecord,
+  JOURNAL_LIMIT,
   PERSIST_KEY,
   REVIEWER_TOOL,
   applyBrainTools,
   createBrainState,
+  lastCoderRecord,
+  recordDelegation,
+  summarizeTask,
 } from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -19,6 +24,7 @@ const baseConfig = {
   allowBash: true,
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
+  autoReview: false,
 };
 
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];
@@ -40,7 +46,7 @@ describe("brain state machine", () => {
     expect(applied).not.toContain("write");
     expect(entries.at(-1)).toMatchObject({
       customType: PERSIST_KEY,
-      data: { v: 1, enabled: true, config: baseConfig },
+      data: { v: 2, enabled: true, config: baseConfig },
     });
   });
 
@@ -214,6 +220,74 @@ describe("brain state machine", () => {
     await dispatch("session_start", { reason: "resume" });
 
     expect(state.config.workerModel).toBe("anthropic/claude-opus-4.8");
+  });
+
+  it("restores the delegation journal from a v2 entry on session_start", async () => {
+    const { pi, dispatch } = makeMockPi();
+    registerBrainFlags(pi);
+    const state = createBrainState(baseConfig);
+    registerBrainEvents(pi, state);
+    const record: DelegationRecord = {
+      kind: "coder",
+      task: "add feature",
+      changedFiles: ["src/a.ts"],
+      gate: "pass",
+      verdict: "pass",
+      cost: 0.1,
+      at: "2026-07-02T00:00:00.000Z",
+    };
+    pi.appendEntry(PERSIST_KEY, {
+      v: 2,
+      enabled: true,
+      config: baseConfig,
+      journal: [record],
+    });
+
+    await dispatch("session_start", { reason: "resume" });
+
+    expect(state.journal).toEqual([record]);
+    expect(lastCoderRecord(state)).toEqual(record);
+  });
+
+  it("treats v1 entries as an empty journal", async () => {
+    const { pi, dispatch } = makeMockPi();
+    registerBrainFlags(pi);
+    const state = createBrainState(baseConfig);
+    registerBrainEvents(pi, state);
+    pi.appendEntry(PERSIST_KEY, { v: 1, enabled: true, config: baseConfig });
+
+    await dispatch("session_start", { reason: "resume" });
+
+    expect(state.journal).toEqual([]);
+  });
+
+  it("caps the journal and finds the last coder record", () => {
+    const state = createBrainState(baseConfig);
+    const record = (kind: DelegationRecord["kind"], task: string): DelegationRecord => ({
+      kind,
+      task,
+      changedFiles: [],
+      gate: "none",
+      verdict: null,
+      cost: 0,
+      at: "2026-07-02T00:00:00.000Z",
+    });
+
+    for (let i = 0; i < JOURNAL_LIMIT + 5; i++) {
+      recordDelegation(state, record("coder", `task ${i}`));
+    }
+    expect(state.journal).toHaveLength(JOURNAL_LIMIT);
+    expect(state.journal[0].task).toBe("task 5");
+
+    recordDelegation(state, record("reviewer", "review it"));
+    expect(lastCoderRecord(state)?.task).toBe(`task ${JOURNAL_LIMIT + 4}`);
+  });
+
+  it("summarizes tasks to their first non-empty line, truncated", () => {
+    expect(summarizeTask("fix the bug\n\nwith details")).toBe("fix the bug");
+    expect(summarizeTask("\n  leading blank line\nrest")).toBe("leading blank line");
+    expect(summarizeTask("x".repeat(150))).toHaveLength(100);
+    expect(summarizeTask("x".repeat(150)).endsWith("…")).toBe(true);
   });
 
   it("/brain command notifies for on, status, and invalid usage", async () => {

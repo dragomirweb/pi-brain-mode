@@ -6,12 +6,107 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 
+import { persist } from "./persistence.ts";
 import { ReviewParams, reviewToolDescription, reviewerSystemPrompt } from "./prompts.ts";
-import { type BrainState, REVIEWER_TOOL } from "./state.ts";
+import {
+  type BrainState,
+  type LastGate,
+  REVIEWER_TOOL,
+  type ReviewVerdict,
+  lastCoderRecord,
+  recordDelegation,
+  summarizeTask,
+  trackUsage,
+} from "./state.ts";
 import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
 import { type WorkerDetails, runSubagent } from "./subagent.ts";
 
 type ReviewParamsT = Static<typeof ReviewParams>;
+
+/** Parse the structured `VERDICT: pass|warn|fail` line from reviewer output. */
+export function parseReviewVerdict(text: string): ReviewVerdict | null {
+  const match = /^\s*VERDICT:\s*(pass|warn|fail)\b/im.exec(text);
+  return match ? (match[1].toLowerCase() as ReviewVerdict) : null;
+}
+
+export interface ReviewRequest {
+  intent: string;
+  acceptanceCriteria?: string;
+  focus?: string;
+  base?: string;
+  reads?: string[];
+  /** Result of the gate the extension already ran, passed as context. */
+  gate?: LastGate | null;
+}
+
+export interface ReviewOutcome {
+  result: AgentToolResult<WorkerDetails>;
+  verdict: ReviewVerdict | null;
+}
+
+export function resolveReviewerModel(state: BrainState, ctx: ExtensionContext): string {
+  return (
+    state.config.reviewerModel.trim() ||
+    (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "") ||
+    state.config.workerModel
+  );
+}
+
+/**
+ * Run an independent review (bridge first, spawner fallback) and parse the
+ * verdict. Shared by delegate_to_reviewer and the auto-review chain.
+ */
+export async function runReview(
+  pi: ExtensionAPI,
+  state: BrainState,
+  ctx: ExtensionContext,
+  req: ReviewRequest,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<WorkerDetails> | undefined,
+): Promise<ReviewOutcome> {
+  const reviewerModel = resolveReviewerModel(state, ctx);
+  const task = assembleReviewTask(req);
+
+  // Try pi-subagents bridge first — returns null if not installed.
+  const bridgeTask = buildBridgeTask(task, undefined, req.reads ?? []);
+  const bridgeOutcome = await runViaBridge(
+    pi,
+    ctx,
+    "brain-reviewer",
+    bridgeTask,
+    reviewerModel,
+    signal,
+    onUpdate,
+  );
+  if (bridgeOutcome?.kind === "aborted") {
+    return { result: bridgeOutcome.result, verdict: null };
+  }
+  if (bridgeOutcome?.kind === "success") {
+    trackUsage(state, bridgeOutcome.result.details.usage);
+    return finishReview(bridgeOutcome.result);
+  }
+  if (bridgeOutcome?.kind === "error" && !bridgeOutcome.infra) {
+    trackUsage(state, bridgeOutcome.result.details.usage);
+    return {
+      result: formatReviewFailure(bridgeOutcome.result, bridgeOutcome.errorText),
+      verdict: null,
+    };
+  }
+  // null (bridge absent) or infra error (unknown agent / model unavailable):
+  // the fallback spawner below is likely to succeed.
+
+  const result = await runSubagent(
+    reviewerModel,
+    reviewerSystemPrompt(),
+    task,
+    "read,edit,write,bash",
+    signal,
+    onUpdate,
+    ctx.cwd,
+  );
+  trackUsage(state, result.details?.usage);
+  return finishReview(result);
+}
 
 export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void {
   pi.registerTool({
@@ -36,45 +131,92 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
       if (!state.config.reviewerEnabled) {
         throw new Error("Reviewer is off. Enable it with /brain reviewer on.");
       }
-      const reviewerModel =
-        state.config.reviewerModel.trim() ||
-        (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "") ||
-        state.config.workerModel;
 
-      // Try pi-subagents bridge first — returns null if not installed.
-      const bridgeTask = buildBridgeTask(assembleReviewTask(params), undefined, params.reads ?? []);
-      const bridgeResult = await runViaBridge(
+      const lastCoder = lastCoderRecord(state);
+      const intent = params.intent?.trim() || lastCoder?.task;
+      if (!intent) {
+        throw new Error(
+          "No `intent` given and no delegation recorded yet — pass `intent` or delegate first.",
+        );
+      }
+      const reads = params.reads?.length ? params.reads : (lastCoder?.changedFiles ?? []);
+
+      const { result, verdict } = await runReview(
         pi,
+        state,
         ctx,
-        "brain-reviewer",
-        bridgeTask,
-        reviewerModel,
+        {
+          intent,
+          acceptanceCriteria: params.acceptanceCriteria,
+          focus: params.focus,
+          base: params.base,
+          reads,
+          gate: state.lastGate,
+        },
         signal,
         onUpdate,
       );
-      if (bridgeResult) return bridgeResult;
 
-      // Fallback: direct process spawn.
-      return runSubagent(
-        reviewerModel,
-        reviewerSystemPrompt(),
-        assembleReviewTask(params),
-        "read,edit,write,bash",
-        signal,
-        onUpdate,
-        ctx.cwd,
-      );
+      recordDelegation(state, {
+        kind: "reviewer",
+        task: summarizeTask(intent),
+        changedFiles: [],
+        gate: "none",
+        verdict,
+        cost: result.details?.usage?.cost ?? 0,
+        at: new Date().toISOString(),
+      });
+      persist(pi, state);
+
+      return result;
     },
   });
 }
 
-function assembleReviewTask(params: ReviewParamsT): string {
-  let task = `Review the current changes.\n\n## Intent\n${params.intent}`;
-  if (params.acceptanceCriteria) task += `\n\n## Acceptance criteria\n${params.acceptanceCriteria}`;
-  if (params.focus) task += `\n\n## Focus\n${params.focus}`;
-  if (params.base) task += `\n\n## Diff base\nCompare against: ${params.base}`;
-  if (params.reads?.length) {
-    task += `\n\n## Read for context\n${params.reads.map((path) => `- ${path}`).join("\n")}`;
+function finishReview(result: AgentToolResult<WorkerDetails>): ReviewOutcome {
+  const text =
+    result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+  const verdict = parseReviewVerdict(text);
+  if (verdict !== "fail") return { result, verdict };
+
+  return {
+    result: {
+      ...result,
+      content: [
+        {
+          type: "text",
+          text: `${text}\n\n⚠️ Review verdict: FAIL — re-delegate a fix to the coder including the findings above.`,
+        },
+      ],
+    },
+    verdict,
+  };
+}
+
+function formatReviewFailure(
+  result: AgentToolResult<WorkerDetails>,
+  errorText: string,
+): AgentToolResult<WorkerDetails> {
+  const text = `⚠️ **Review failed**: ${errorText}
+
+No verdict was produced. Verify the change yourself (read the diff, run the
+gate) or retry delegate_to_reviewer.`;
+  return { ...result, content: [{ type: "text", text }] };
+}
+
+function assembleReviewTask(req: ReviewRequest): string {
+  let task = `Review the current changes.\n\n## Intent\n${req.intent}`;
+  if (req.acceptanceCriteria) task += `\n\n## Acceptance criteria\n${req.acceptanceCriteria}`;
+  if (req.focus) task += `\n\n## Focus\n${req.focus}`;
+  if (req.base) task += `\n\n## Diff base\nCompare against: ${req.base}`;
+  if (req.gate) {
+    task += `\n\n## Quality gate (already run by the orchestrator after the delegation)
+\`${req.gate.command}\` → ${req.gate.ok ? "PASS" : "FAIL"}
+${req.gate.output ? `\`\`\`\n${req.gate.output}\n\`\`\`` : "(no output)"}
+Treat this as fresh; spot-check rather than fully re-running if it passed.`;
+  }
+  if (req.reads?.length) {
+    task += `\n\n## Read for context\n${req.reads.map((path) => `- ${path}`).join("\n")}`;
   }
   return task;
 }

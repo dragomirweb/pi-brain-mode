@@ -36,7 +36,17 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
   pi.registerCommand("brain", {
     description: "Brain Mode: /brain (settings) | on | off | status | help",
     getArgumentCompletions: (prefix: string) => {
-      const verbs = ["on", "off", "status", "worker", "thinking", "fallback", "reviewer", "help"];
+      const verbs = [
+        "on",
+        "off",
+        "status",
+        "log",
+        "worker",
+        "thinking",
+        "fallback",
+        "reviewer",
+        "help",
+      ];
       const trimmed = prefix.trim();
       if (trimmed.indexOf(" ") !== -1) return null;
       return verbs.filter((v) => v.startsWith(trimmed)).map((v) => ({ value: v, label: v }));
@@ -59,6 +69,10 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
       if (verb === "status") {
         const thinkingModelId = ctx.model ? canonicalModelId(ctx.model) : "unknown";
         ctx.ui.notify(msg.statusLine(state, thinkingModelId), "info");
+        return;
+      }
+      if (verb === "log") {
+        ctx.ui.notify(msg.journalText(state), "info");
         return;
       }
       if (verb === "on") {
@@ -145,6 +159,12 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           ctx.ui.notify(msg.reviewerSet(state), "info");
           return;
         }
+        if (lowered === "always" || lowered === "manual") {
+          state.config.autoReview = lowered === "always";
+          persist(pi, state);
+          ctx.ui.notify(msg.autoReviewSet(state), "info");
+          return;
+        }
         if (lowered === "auto") {
           state.config.reviewerModel = "";
           persist(pi, state);
@@ -189,6 +209,7 @@ async function openSettingsMenu(
 
     if (state.config.reviewerEnabled) {
       options.push(`Reviewer model — ${reviewerModelLabel}`);
+      options.push(`Auto-review — ${state.config.autoReview ? "ON" : "OFF"}`);
     }
 
     options.push(`Bash — ${state.config.allowBash ? "read-only" : "removed"}`);
@@ -229,6 +250,12 @@ async function openSettingsMenu(
 
       case "Reviewer model":
         await showModelPicker(pi, state, ctx, "reviewer");
+        break;
+
+      case "Auto-review":
+        state.config.autoReview = !state.config.autoReview;
+        persist(pi, state);
+        ctx.ui.notify(msg.autoReviewSet(state), "info");
         break;
 
       case "Bash": {

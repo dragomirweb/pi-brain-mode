@@ -23,6 +23,37 @@ describe("piBrain", () => {
     expect(tools.size).toBe(0);
   });
 
+  it("defaults Brain Mode ON: session_start applies the brain toolset", async () => {
+    const mock = makeMockPi({
+      initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    });
+
+    piBrain(mock.pi);
+    await mock.dispatch("session_start", { reason: "start" });
+
+    const applied = mock.getActiveTools();
+    expect(applied).not.toContain("edit");
+    expect(applied).not.toContain("write");
+    expect(applied).toContain("delegate_to_coder");
+    // Reviewer defaults ON, so its tool is exposed too.
+    expect(applied).toContain("delegate_to_reviewer");
+  });
+
+  it("starts disabled with --brain-off", async () => {
+    const mock = makeMockPi({
+      initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+      flags: { "brain-off": true },
+    });
+
+    piBrain(mock.pi);
+    await mock.dispatch("session_start", { reason: "start" });
+
+    const applied = mock.getActiveTools();
+    expect(applied).toContain("edit");
+    expect(applied).toContain("write");
+    expect(applied).not.toContain("delegate_to_coder");
+  });
+
   it("registers only a fallback command on an unsupported host", async () => {
     type CommandDefinition = Parameters<ExtensionAPI["registerCommand"]>[1];
     const registered: Array<{ name: string; def: CommandDefinition }> = [];
