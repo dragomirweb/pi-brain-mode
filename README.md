@@ -44,9 +44,12 @@ Use the `/brain` command:
 /brain reviewer on|off
 /brain reviewer always|manual
 /brain reviewer <id>
+/brain gate <cmd|auto|off>
 ```
 
 `/brain worker <id>` and `/brain fallback <id[,id]|none>` update the persisted worker model and fallback chain for future delegations. `/brain thinking <id>` switches the orchestrator model for the current session only; it is a one-shot switch and is not persisted. Unknown model names are rejected; use `provider/model-id` or a unique bare model id from `pi --list-models`. `/brain log` shows the delegation journal (see below); `/brain status` includes the session spend across all delegations.
+
+`/brain gate <cmd|auto|off>` sets the persisted quality-gate command. This matters in monorepos: auto-detect only finds a root-level `check`/`test` script, so without it the gate silently never runs — each delegation result then carries an explicit "Quality gate: none configured" notice. The configured command is also handed to the worker (so it runs the *right* check instead of guessing) and its result to the reviewer (so it spot-checks instead of re-running everything).
 
 ## Reviewer
 
@@ -54,7 +57,9 @@ Use the `/brain` command:
 
 When the reviewer is enabled, the orchestrator gains a `delegate_to_reviewer` tool. The reviewer inspects the coder's diff, verifies the quality gate (it receives the gate result the extension already ran and spot-checks rather than blindly re-running), runs `fallow audit` if installed, judges the change against the stated `intent`/`acceptanceCriteria`, applies only trivial mechanical fixes itself, and returns a structured verdict (pass/warn/fail) plus findings. `intent` and `reads` default to the most recent delegation, so a bare `delegate_to_reviewer` call reviews the last change.
 
-**Auto-review** (default: **on**, toggle with `/brain reviewer always|manual` or `--brain-no-auto-review`): after each successful delegation that passes the gate, the reviewer runs automatically and its verdict is appended to the delegation result — coder → gate → review in a single tool call. The verdict is parsed and recorded in the journal; a `fail` verdict comes with an explicit instruction to re-delegate a fix. Auto-review is skipped when the gate fails (a fix delegation is coming anyway) and for read-only runs.
+**Auto-review** (default: **on**, toggle with `/brain reviewer always|manual` or `--brain-no-auto-review`): after each successful delegation that passes the gate, the reviewer runs automatically and its verdict is appended to the delegation result — coder → gate → review in a single tool call. The verdict is parsed and recorded in the journal; a `fail` verdict comes with an explicit instruction to re-delegate a fix. Auto-review is skipped when the gate fails (a fix delegation is coming anyway), for read-only runs, and when the orchestrator passes `review: false` on a trivial mechanical delegation.
+
+The reviewer is tuned to be cheap on small diffs: it receives the extension's gate result plus the worker's own report of which checks it ran, and is instructed to spot-check with at most one targeted command scoped to the changed files rather than re-running repo-wide compiles the worker already ran. In a monorepo, that turns a ~4-minute review into under a minute.
 
 When Brain Mode is on, `edit` and `write` are removed from the main agent. `bash` stays available by default, but it is gated to read/search-style commands; mutating or opaque shell commands are blocked and should be delegated. The main implementation path is `delegate_to_coder`, where the brain sends a scoped task to a coder worker. For empirical verification (run the tests, benchmark something), the brain calls `delegate_to_coder` with `readOnly: true` — the worker then gets no edit/write tools at all, so the run cannot mutate anything.
 
@@ -76,7 +81,7 @@ The failure loop also has memory: when a delegation fails the quality gate, the 
 - `--brain-worker-model <model>`: primary worker model. Defaults to `openai-codex/gpt-5.5`.
 - `--brain-worker-fallback <model[,model...]>`: fallback worker model list. Defaults to `claude-opus-4-8`.
 - `--brain-no-bash`: hard-removes `bash` from the brain toolset. Without this flag, `bash` is kept and gated.
-- `--brain-gate-command <cmd>`: post-delegation quality gate (default: auto-detect `npm run check` / `npm test`; `off` to disable).
+- `--brain-gate-command <cmd>`: post-delegation quality gate (default: auto-detect `npm run check` / `npm test`; `off` to disable). Also settable per repo at runtime with `/brain gate <cmd|auto|off>` (persisted).
 - `--brain-reviewer` / `--brain-no-reviewer`: enable/disable the reviewer subagent (default: enabled).
 - `--brain-reviewer-model <model>`: reviewer model id. Defaults to the orchestrator model, a different model than the worker.
 - `--brain-no-auto-review`: don't automatically review each successful delegation (default: auto-review on).
@@ -90,6 +95,8 @@ Brain Mode layers several controls:
 3. The prompt redirects implementation work to `delegate_to_coder`.
 
 **Worker isolation:** delegated children never load Pi extensions. The packaged agents declare an empty `extensions` sandbox (pi-subagents spawns them with `--no-extensions`), the fallback spawner passes `--no-extensions` itself, and pi-brain refuses to activate inside any worker (`PI_BRAIN_WORKER`) or pi-subagents child (`PI_SUBAGENT_CHILD`). Without this, Brain Mode would strip `edit`/`write` from the very coder it delegated to, and pi-intercom would reroute worker output away from the tool result. If pi-intercom still detaches a run mid-flight (e.g. with customized agents), the delegation reports **DETACHED** with recovery guidance — it is never mistaken for a completed task, and no gate or auto-review runs on it.
+
+**Intercom receipt recovery:** when pi-intercom is active in the *parent* session, pi-subagents replaces a completed run's tool result with a delivery receipt ("Full grouped output was sent over intercom") and sends the real output as a 📨 message — which the child sandbox cannot prevent. The bridge detects the receipt and transparently recovers the worker's real output from the run's artifact file on disk, so summaries, review verdicts, and the journal keep working; the duplicate 📨 message can be ignored. Changed files are additionally mined from pi-subagents' per-run tool-call summaries, which survive the receipt.
 
 When [pi-subagents](https://github.com/nicobailon/pi-subagents) (>= 0.30) is installed, `delegate_to_coder` and `delegate_to_reviewer` run through its in-process event bridge using the packaged `brain-coder` / `brain-runner` / `brain-reviewer` agent definitions (discovered via the `pi-subagents` key in `package.json`). This gives you pi-subagents' progress widgets, artifact storage, and native model fallback. Usage/cost is read from the `totalChildUsage` rollup (pi-subagents >= 0.32) and aggregated into a session-spend line in `/brain status`. Runs carry a native `timeoutMs` deadline (enforced by pi-subagents >= 0.31), and an acknowledged run that never responds is cancelled client-side after 15 minutes instead of hanging the session. Bridge failures are classified: availability errors (unknown agent, model unavailable) fall through to the process spawner below, while genuine task failures are surfaced with an explicit warning — and the quality gate still runs, since the worker may have left files half-changed.
 

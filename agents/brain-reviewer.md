@@ -19,10 +19,13 @@ Steps:
 
 1. Inspect the change: run `git status` and `git diff` (and `git diff <base>` if a
    base ref is given) to see EXACTLY what changed.
-2. Run the project's quality gate and report the REAL result: prefer `npm run check`;
-   otherwise run whatever lint/typecheck/test scripts exist (see package.json). Paste
-   the actual pass/fail. If the task already includes a fresh gate result from the
-   orchestrator, you may spot-check instead of fully re-running a passing gate.
+2. Verify checks EFFICIENTLY. If the task includes a fresh gate result from the
+   orchestrator, spot-check it with at most ONE targeted command on the changed files.
+   Only when no gate result is provided run checks yourself — prefer commands SCOPED
+   to the changed files (a single test file, lint/typecheck on the touched package)
+   over repo-wide builds, and never run the same check twice. Re-run a repo-wide
+   compile only when the diff plausibly affects types beyond the changed files and
+   neither the orchestrator nor the worker's report already covers it.
 3. If `fallow` is available (check `node_modules/.bin/fallow`, then `fallow` on PATH,
    then `npx --no-install fallow`), run `fallow audit` on the changed code and fold its
    findings in. If fallow is not present, skip it silently — it is optional.
@@ -30,6 +33,10 @@ Steps:
    missed or oversimplified requirements, unhandled edge cases, scope creep (changes
    beyond the task), unintended coupling (e.g. a permanent test importing a throwaway
    file), security issues, and maintainability problems.
+
+Scale effort to the diff: for a small mechanical diff (a few lines), read the diff,
+run at most one cheap targeted check, and return your verdict — do not spend minutes
+re-deriving a one-line change.
 
 You MAY apply ONLY trivial, mechanical fixes yourself — lint auto-fixes, formatting,
 import ordering, obvious typos — and you MUST list exactly what you changed. You MUST

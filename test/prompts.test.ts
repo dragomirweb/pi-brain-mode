@@ -18,6 +18,7 @@ const config = {
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
   autoReview: false,
+  gateCommand: "",
 };
 
 describe("prompts", () => {
@@ -77,7 +78,7 @@ describe("prompts", () => {
 
     expect(schema.type).toBe("object");
     expect(schema.required).toEqual(["task"]);
-    expect(Object.keys(schema.properties)).toEqual(["task", "plan", "reads", "readOnly"]);
+    expect(Object.keys(schema.properties)).toEqual(["task", "plan", "reads", "readOnly", "review"]);
     expect(schema.properties.task.type).toBe("string");
     expect(schema.properties.plan.type).toBe("string");
     expect(schema.properties.reads.type).toBe("array");
@@ -119,6 +120,28 @@ describe("prompts", () => {
 
     const noBash = makeBrainState({ ...config, allowBash: false });
     expect(statusLine(noBash, "openai-codex/gpt-5.5")).toContain("Orchestrator bash: removed");
+  });
+
+  it("status line reflects the quality gate setting", () => {
+    expect(statusLine(makeBrainState(config), "m")).toContain("Quality gate: auto-detect");
+    expect(statusLine(makeBrainState({ ...config, gateCommand: "make verify" }), "m")).toContain(
+      "Quality gate: make verify",
+    );
+    expect(statusLine(makeBrainState({ ...config, gateCommand: "off" }), "m")).toContain(
+      "Quality gate: OFF",
+    );
+  });
+
+  it("addendum offers review: false for trivial changes and flags duplicate 📨 messages", () => {
+    const state = makeBrainState({ ...config, reviewerEnabled: true, autoReview: true });
+    const addendum = brainSystemAddendum(state);
+
+    expect(addendum).toContain("review: false");
+    expect(addendum).toContain("📨");
+    expect(addendum).toContain("duplicate delivery");
+
+    // Without auto-review there is no review to skip.
+    expect(brainSystemAddendum(makeBrainState(config))).not.toContain("review: false");
   });
 
   it("status line omits session spend until a delegation has run", () => {

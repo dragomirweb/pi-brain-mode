@@ -25,6 +25,7 @@ const baseConfig = {
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
   autoReview: false,
+  gateCommand: "",
 };
 
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];

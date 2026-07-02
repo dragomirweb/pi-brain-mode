@@ -18,6 +18,12 @@ export const DelegateParams = Type.Object({
         "Verification mode: the worker gets NO edit/write tools. Use to run tests/commands and report output. Skips the quality gate and auto-review.",
     }),
   ),
+  review: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set false to skip the automatic independent review for THIS delegation. Only for trivial mechanical changes (one-liners, renames, comments). Default: true.",
+    }),
+  ),
 });
 
 export const ReviewParams = Type.Object({
@@ -98,6 +104,9 @@ How to delegate well:
 - If a delegation returns "DETACHED", the worker paused to ask you a question:
   answer it (via the intercom tool if available), wait for its result message,
   then verify and re-delegate what remains. Do NOT dig through session files.
+- A 📨 "subagent results" intercom message for a delegation that ALREADY
+  returned its result is a duplicate delivery — ignore it; do not re-read
+  artifacts or session files for it.
 
 Splitting large work:
 - BEFORE delegating, estimate scope: if the change spans many files or involves
@@ -113,7 +122,9 @@ How to verify a delegated change:
     state.config.reviewerEnabled && state.config.autoReview
       ? `
 - An INDEPENDENT REVIEW also runs automatically after each successful delegation —
-  read its VERDICT (pass/warn/fail) and findings. On fail, re-delegate a fix.`
+  read its VERDICT (pass/warn/fail) and findings. On fail, re-delegate a fix.
+  For a TRIVIAL mechanical change (one-liner, rename, comment) pass
+  \`review: false\` to skip it — a full review costs minutes and real money.`
       : ""
   }
 - READ the changed files and check them against the acceptance criteria.
@@ -156,6 +167,9 @@ Provide:
 - \`readOnly\`: (optional) verification mode — the worker gets NO edit/write tools.
   Use it to run tests or commands empirically and report output; the quality gate
   and auto-review are skipped since nothing can change.
+- \`review\`: (optional) set false to skip the automatic independent review for
+  this delegation — only for trivial mechanical changes where a full review
+  would cost more than the change itself.
 
 Batch related changes into a single call (each call spawns a full worker
 process). Returns the worker's summary of what it changed (or throws on
@@ -196,10 +210,13 @@ trust any prior summary; re-derive correctness from the diff and the spec.
 Steps:
 1. Inspect the change: run \`git status\` and \`git diff\` (and \`git diff <base>\` if a
    base ref is given) to see EXACTLY what changed.
-2. Run the project's quality gate and report the REAL result: prefer \`npm run check\`;
-   otherwise run whatever lint/typecheck/test scripts exist (see package.json). Paste
-   the actual pass/fail. If the task already includes a fresh gate result from the
-   orchestrator, you may spot-check instead of fully re-running a passing gate.
+2. Verify checks EFFICIENTLY. If the task includes a fresh gate result from the
+   orchestrator, spot-check it with at most ONE targeted command on the changed files.
+   Only when no gate result is provided run checks yourself — prefer commands SCOPED
+   to the changed files (a single test file, lint/typecheck on the touched package)
+   over repo-wide builds, and never run the same check twice. Re-run a repo-wide
+   compile only when the diff plausibly affects types beyond the changed files and
+   neither the orchestrator nor the worker's report already covers it.
 3. If \`fallow\` is available (check \`node_modules/.bin/fallow\`, then \`fallow\` on PATH,
    then \`npx --no-install fallow\`), run \`fallow audit\` on the changed code and fold its
    findings in. If fallow is not present, skip it silently — it is optional.
@@ -207,6 +224,10 @@ Steps:
    missed or oversimplified requirements, unhandled edge cases, scope creep (changes
    beyond the task), unintended coupling (e.g. a permanent test importing a throwaway
    file), security issues, and maintainability problems.
+
+Scale effort to the diff: for a small mechanical diff (a few lines), read the diff,
+run at most one cheap targeted check, and return your verdict — do not spend minutes
+re-deriving a one-line change.
 
 You MAY apply ONLY trivial, mechanical fixes yourself — lint auto-fixes, formatting,
 import ordering, obvious typos — and you MUST list exactly what you changed. You MUST
@@ -228,11 +249,15 @@ to you. Implement it precisely and completely.
 - Read any plan/context files mentioned in the task first.
 - Make the necessary file edits and run any needed commands.
 - Do not ask questions — use your best judgment consistent with the plan.
-- Before finishing, run the project's quality gate if one exists (\`npm run check\`,
-  or its lint/typecheck/test scripts) and FIX any failures you introduced — the
-  orchestrator re-runs it after you and a failure sends the task back to you.
+- Before finishing, run the quality gate the task names (or the project's
+  \`npm run check\`-style script if none is named) and FIX any failures you
+  introduced — the orchestrator re-runs it after you and a failure sends the
+  task back to you. If the project has no repo-wide gate, verify with checks
+  SCOPED to the files you changed; do not repeat a check that already passed
+  unless you changed files after it.
 - When done, briefly summarize EXACTLY what you changed (files + a short
-  description of each change) so the orchestrator can verify.`;
+  description of each change) AND which checks you ran with their results, so
+  the orchestrator and reviewer can verify without re-running everything.`;
 }
 
 export function runnerSystemPrompt(): string {
@@ -273,7 +298,21 @@ export function brainUsage(): string {
 /brain worker|thinking <model-id>
 /brain fallback <id[,id]|none>
 /brain reviewer on|off|always|manual|auto|<model-id>
-  (always/manual toggle auto-review; auto = use the orchestrator model)`;
+  (always/manual toggle auto-review; auto = use the orchestrator model)
+/brain gate <cmd|auto|off>
+  (quality gate command; auto = detect check/test script in package.json)`;
+}
+
+/** Human-readable label for the configured quality gate. */
+export function gateLabel(state: BrainState): string {
+  const configured = state.config.gateCommand?.trim() ?? "";
+  if (configured.toLowerCase() === "off") return "OFF";
+  if (configured) return configured;
+  return "auto-detect (`check`/`test` script)";
+}
+
+export function gateSet(state: BrainState): string {
+  return `Quality gate: ${gateLabel(state)}.`;
 }
 
 export function formatSessionSpend(state: BrainState): string {
@@ -299,6 +338,7 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
 Thinking model: ${thinkingModelId}
 Worker model: ${state.config.workerModel}${fallbackSuffix}
 Reviewer: ${reviewerMode}
+Quality gate: ${gateLabel(state)}
 Orchestrator bash: ${bashMode}${spendLine}`;
 }
 

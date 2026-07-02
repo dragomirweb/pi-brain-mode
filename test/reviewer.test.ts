@@ -21,6 +21,7 @@ const baseConfig = {
   reviewerEnabled: true,
   reviewerModel: "claude-opus-4-8",
   autoReview: false,
+  gateCommand: "",
 };
 
 class FakeChild extends EventEmitter {

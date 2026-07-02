@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -244,6 +247,96 @@ describe("runViaBridge", () => {
     });
   });
 
+  it("recovers the real output from the run artifact when pi-subagents delivers an intercom receipt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "brain-bridge-test-"));
+    const artifactPath = join(dir, "run_brain-coder_0_output.md");
+    writeFileSync(artifactPath, "Implemented the change.\nChecks: tsc clean.\n");
+
+    try {
+      const promise = runViaBridge(
+        mockPi,
+        mockCtx,
+        "brain-coder",
+        "Task: something",
+        undefined,
+        undefined,
+        undefined,
+      );
+
+      await new Promise((r) => setTimeout(r, 0));
+      const requestId = getRequestId(emitSpy);
+
+      mockPi.events.emit("subagent:slash:response", {
+        requestId,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: "Delivered single subagent result via intercom.\nRun: d8b48658\nChildren: 1 completed\nFull grouped output was sent over intercom.",
+            },
+          ],
+          details: {
+            results: [
+              {
+                agent: "brain-coder",
+                artifactPaths: { outputPath: artifactPath },
+                usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.01, turns: 1 },
+              },
+            ],
+          },
+        },
+        isError: false,
+      });
+
+      const outcome = await promise;
+      expect(outcome?.kind).toBe("success");
+      const text = (outcome?.result.content[0] as { text: string }).text;
+      expect(text).toContain("Implemented the change.");
+      expect(text).toContain("Checks: tsc clean.");
+      expect(text).toContain("recovered from the run artifact");
+      expect(text).not.toContain("Full grouped output was sent over intercom");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when the intercom receipt's artifact cannot be read", async () => {
+    const promise = runViaBridge(
+      mockPi,
+      mockCtx,
+      "brain-coder",
+      "Task: something",
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const requestId = getRequestId(emitSpy);
+
+    mockPi.events.emit("subagent:slash:response", {
+      requestId,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "Delivered single subagent result via intercom.\nRun: d8b48658\nFull grouped output was sent over intercom.",
+          },
+        ],
+        details: {
+          results: [{ agent: "brain-coder", artifactPaths: { outputPath: "/nonexistent/x.md" } }],
+        },
+      },
+      isError: false,
+    });
+
+    const outcome = await promise;
+    expect(outcome?.kind).toBe("success");
+    const text = (outcome?.result.content[0] as { text: string }).text;
+    expect(text).toContain("Delivered single subagent result via intercom");
+    expect(text).toContain("artifact could not be read");
+  });
+
   it("classifies task failures as non-infra errors", async () => {
     const promise = runViaBridge(
       mockPi,
@@ -486,6 +579,22 @@ describe("extractChangedFiles", () => {
   it("returns empty for missing details", () => {
     expect(extractChangedFiles(undefined)).toEqual([]);
     expect(extractChangedFiles({})).toEqual([]);
+  });
+
+  it("mines edit/write targets from pi-subagents toolCalls summaries", () => {
+    const files = extractChangedFiles({
+      results: [
+        {
+          toolCalls: [
+            { text: "read src/a.ts", expandedText: "read src/a.ts" },
+            { text: "edit src/a.ts", expandedText: "edit src/a.ts" },
+            { text: "write src/new…", expandedText: "write src/new-file.ts" },
+            { text: "$ npm test", expandedText: "$ npm test" },
+          ],
+        },
+      ],
+    });
+    expect(files).toEqual(["src/a.ts", "src/new-file.ts"]);
   });
 });
 

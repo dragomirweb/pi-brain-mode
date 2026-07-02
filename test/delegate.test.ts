@@ -22,6 +22,7 @@ const baseConfig = {
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
   autoReview: false,
+  gateCommand: "",
 };
 
 class FakeChild extends EventEmitter {
@@ -132,10 +133,11 @@ describe("delegate_to_coder", () => {
     });
     children[0].close(0);
 
-    await expect(resultPromise).resolves.toMatchObject({
-      content: [{ type: "text", text: "Changed files: src/example.ts" }],
-      details: { changedFiles: ["src/example.ts"] },
-    });
+    const result = await resultPromise;
+    const resultText = (result.content[0] as { text: string }).text;
+    expect(resultText).toContain("Changed files: src/example.ts");
+    expect(resultText).toContain("Quality gate: none configured");
+    expect(result.details).toMatchObject({ changedFiles: ["src/example.ts"] });
 
     const call = spawnCalls[0];
     expect(call.args).toContain("--mode");
@@ -299,9 +301,8 @@ describe("delegate_to_coder", () => {
     });
     children[1].close(0);
 
-    await expect(resultPromise).resolves.toMatchObject({
-      content: [{ type: "text", text: "fallback succeeded" }],
-    });
+    const result = await resultPromise;
+    expect((result.content[0] as { text: string }).text).toContain("fallback succeeded");
     expect(modelArg(spawnCalls[0].args)).toBe(baseConfig.workerModel);
     expect(modelArg(spawnCalls[1].args)).toBe(baseConfig.fallbackModels[0]);
   });
@@ -515,9 +516,8 @@ describe("delegate_to_coder", () => {
     });
     children[0].close(0);
 
-    await expect(resultPromise).resolves.toMatchObject({
-      content: [{ type: "text", text: "spawner succeeded" }],
-    });
+    const result = await resultPromise;
+    expect((result.content[0] as { text: string }).text).toContain("spawner succeeded");
     expect(modelArg(spawnCalls[0].args)).toBe(baseConfig.workerModel);
   });
 
@@ -755,6 +755,110 @@ describe("delegate_to_coder", () => {
     // Worker + gate only — the reviewer was not spawned.
     expect(spawnCalls).toHaveLength(2);
     expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "fail", verdict: null });
+  });
+
+  it("skips the auto-review when the delegation passes review: false", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      { "brain-gate-command": "npm run check" },
+      { reviewerEnabled: true, autoReview: true },
+    );
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "trim a redundant annotation", review: false },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].close(0);
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].close(0);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("PASS");
+    expect(text).not.toContain("Independent review");
+    // Worker + gate only — the reviewer was not spawned.
+    expect(spawnCalls).toHaveLength(2);
+    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "pass", verdict: null });
+  });
+
+  it("uses the configured gate command and hands it to the worker and reviewer", async () => {
+    const { tool, ctx } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      {},
+      { reviewerEnabled: true, autoReview: true, gateCommand: "make verify" },
+    );
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "add feature" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    const workerTask = spawnCalls[0].args.at(-1);
+    expect(workerTask).toContain("## Quality gate");
+    expect(workerTask).toContain("run `make verify`");
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "changed src/a.ts; make verify passed" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    expect(spawnCalls[1].command).toBe("make verify");
+    children[1].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(3));
+    const reviewTask = spawnCalls[2].args.at(-1);
+    expect(reviewTask).toContain("## Worker's report");
+    expect(reviewTask).toContain("make verify passed");
+    children[2].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: pass" }],
+        stopReason: "end",
+      },
+    });
+    children[2].close(0);
+
+    await expect(resultPromise).resolves.toBeDefined();
+  });
+
+  it("tells the worker to use targeted checks when no gate is configured", async () => {
+    const { tool, ctx } = makeRegisteredTool(true);
+
+    const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    const workerTask = spawnCalls[0].args.at(-1);
+    expect(workerTask).toContain("No project-wide gate is configured");
+    expect(workerTask).toContain("TARGETED checks");
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].close(0);
+
+    const result = await resultPromise;
+    expect((result.content[0] as { text: string }).text).toContain("Quality gate: none configured");
   });
 
   it("returns guidance without gate or review when the worker detaches via intercom", async () => {

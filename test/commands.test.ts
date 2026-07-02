@@ -11,6 +11,7 @@ const baseConfig = {
   reviewerEnabled: false,
   reviewerModel: "claude-opus-4-8",
   autoReview: false,
+  gateCommand: "",
 };
 
 const defaultModels = [
@@ -174,6 +175,31 @@ describe("/brain model configuration commands", () => {
 
     await brain.handler("reviewer manual", ctx);
     expect(state.config.autoReview).toBe(false);
+  });
+
+  it("/brain gate sets, clears, and disables the quality gate command", async () => {
+    const { brain, ctx, state, entries, notifications } = setup();
+
+    await brain.handler("gate pnpm --filter app tsc", ctx);
+    expect(state.config.gateCommand).toBe("pnpm --filter app tsc");
+    expect(entries.at(-1)).toMatchObject({
+      customType: PERSIST_KEY,
+      data: { v: 2, config: { gateCommand: "pnpm --filter app tsc" } },
+    });
+    expect(notifications.at(-1)?.msg ?? "").toContain("pnpm --filter app tsc");
+
+    await brain.handler("gate off", ctx);
+    expect(state.config.gateCommand).toBe("off");
+    expect(notifications.at(-1)?.msg ?? "").toContain("OFF");
+
+    await brain.handler("gate auto", ctx);
+    expect(state.config.gateCommand).toBe("");
+    expect(notifications.at(-1)?.msg ?? "").toContain("auto-detect");
+
+    // Bare "gate" reports the current setting without mutating.
+    await brain.handler("gate", ctx);
+    expect(state.config.gateCommand).toBe("");
+    expect(notifications.at(-1)?.msg ?? "").toContain("auto-detect");
   });
 
   it("/brain log shows the delegation journal", async () => {
@@ -356,6 +382,7 @@ function setup(opts?: SetupOptions) {
     reviewerEnabled: baseConfig.reviewerEnabled,
     reviewerModel: baseConfig.reviewerModel,
     autoReview: baseConfig.autoReview,
+    gateCommand: baseConfig.gateCommand,
   });
   registerBrainCommand(mock.pi, state);
   const brain = mock.commands.get("brain");

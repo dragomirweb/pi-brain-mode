@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
@@ -87,6 +89,44 @@ export type BridgeOutcome =
 /** pi-subagents returns this text when pi-intercom detaches a run mid-flight. */
 const DETACHED_PREFIX = /^Detached for intercom coordination/i;
 
+/**
+ * When pi-intercom is active in the PARENT session, pi-subagents replaces the
+ * completed run's output with a delivery receipt and sends the real output as
+ * an intercom message instead. The receipt strips `finalOutput`/`messages`
+ * from details but keeps `artifactPaths` — so the real output is recoverable
+ * from the run's output artifact on disk.
+ */
+const INTERCOM_RECEIPT = /^Delivered (?:single|parallel|chain) subagent results? via intercom\./i;
+
+/**
+ * Recover the subagent's real output from its artifact file(s) after
+ * pi-subagents rerouted the inline output to intercom. Returns null when no
+ * artifact could be read (the caller keeps the receipt text + a warning).
+ */
+export function recoverReceiptOutput(details: JsonObject | undefined): string | null {
+  const results = Array.isArray(details?.results) ? details.results : [];
+  const parts: string[] = [];
+  for (const result of results) {
+    const r = result as JsonObject | undefined;
+    const artifactPaths = r?.artifactPaths as JsonObject | undefined;
+    const outputPath = artifactPaths?.outputPath;
+    if (typeof outputPath !== "string" || outputPath.length === 0) continue;
+    try {
+      const text = readFileSync(expandHome(outputPath), "utf8").trim();
+      if (!text) continue;
+      const agent = typeof r?.agent === "string" ? r.agent : "";
+      parts.push(results.length > 1 && agent ? `### ${agent}\n${text}` : text);
+    } catch {
+      // Unreadable artifact — fall through; the caller appends a warning.
+    }
+  }
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+function expandHome(path: string): string {
+  return path.startsWith("~/") ? `${homedir()}${path.slice(1)}` : path;
+}
+
 function emptyUsage(): WorkerDetails["usage"] {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 }
@@ -146,6 +186,20 @@ export function extractChangedFiles(details: JsonObject | undefined): string[] {
     if (!Array.isArray(files)) continue;
     for (const file of files) {
       if (typeof file === "string") changed.add(file);
+    }
+  }
+  // pi-subagents has no changedFiles field, but each result carries compact
+  // toolCalls summaries ("edit <path>" / "write <path>") that survive even the
+  // intercom receipt strip — mine the mutation targets from them.
+  for (const result of results) {
+    const toolCalls = (result as JsonObject | undefined)?.toolCalls;
+    if (!Array.isArray(toolCalls)) continue;
+    for (const call of toolCalls) {
+      const c = call as { text?: unknown; expandedText?: unknown } | undefined;
+      const text = typeof c?.expandedText === "string" ? c.expandedText : c?.text;
+      if (typeof text !== "string") continue;
+      const match = /^(?:edit|write)\s+(\S.*)$/.exec(text.trim());
+      if (match) changed.add(expandHome(match[1].trim()));
     }
   }
   return [...changed];
@@ -312,7 +366,7 @@ export function runViaBridge(
 
       const usage = extractUsage(response.result.details);
       const changedFiles = extractChangedFiles(response.result.details);
-      const text = extractText(response.result.content);
+      let text = extractText(response.result.content);
       const details: WorkerDetails = changedFiles.length ? { usage, changedFiles } : { usage };
 
       if (response.isError) {
@@ -329,6 +383,13 @@ export function runViaBridge(
       if (DETACHED_PREFIX.test(text.trim())) {
         resolve({ kind: "detached", result: { content: [{ type: "text", text }], details } });
         return;
+      }
+
+      if (INTERCOM_RECEIPT.test(text.trim())) {
+        const recovered = recoverReceiptOutput(response.result.details);
+        text = recovered
+          ? `${recovered}\n\n(Output recovered from the run artifact — pi-subagents rerouted the inline result to an intercom message; the duplicate 📨 message can be ignored.)`
+          : `${text}\n\n⚠️ pi-subagents rerouted the subagent's output to an intercom message and the run artifact could not be read. Check the 📨 subagent-result message for the real output before trusting this result.`;
       }
 
       resolve({ kind: "success", result: { content: [{ type: "text", text }], details } });

@@ -12,6 +12,7 @@ export const DEFAULT_CONFIG: BrainConfig = {
   reviewerEnabled: true,
   reviewerModel: DEFAULT_REVIEWER_MODEL,
   autoReview: true,
+  gateCommand: "",
 };
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
@@ -92,5 +93,14 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
         : typeof base.autoReview === "boolean"
           ? base.autoReview
           : true,
+    gateCommand: resolveGateCommandConfig(pi.getFlag("brain-gate-command"), base.gateCommand),
   };
+}
+
+function resolveGateCommandConfig(flag: unknown, base: string | undefined): string {
+  if (typeof flag === "string" && flag.trim().length > 0) {
+    const normalized = flag.trim();
+    return ["off", "none"].includes(normalized.toLowerCase()) ? "off" : normalized;
+  }
+  return typeof base === "string" ? base : "";
 }

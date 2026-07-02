@@ -16,8 +16,12 @@ to you. Implement it precisely and completely.
 - Read any plan/context files mentioned in the task first.
 - Make the necessary file edits and run any needed commands.
 - Do not ask questions — use your best judgment consistent with the plan.
-- Before finishing, run the project's quality gate if one exists (`npm run check`,
-  or its lint/typecheck/test scripts) and FIX any failures you introduced — the
-  orchestrator re-runs it after you and a failure sends the task back to you.
+- Before finishing, run the quality gate the task names (or the project's
+  `npm run check`-style script if none is named) and FIX any failures you
+  introduced — the orchestrator re-runs it after you and a failure sends the
+  task back to you. If the project has no repo-wide gate, verify with checks
+  SCOPED to the files you changed; do not repeat a check that already passed
+  unless you changed files after it.
 - When done, briefly summarize EXACTLY what you changed (files + a short
-  description of each change) so the orchestrator can verify.
+  description of each change) AND which checks you ran with their results, so
+  the orchestrator and reviewer can verify without re-running everything.

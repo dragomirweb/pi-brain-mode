@@ -12,6 +12,11 @@ export interface BrainConfig {
   reviewerModel: string;
   /** Automatically chain an independent review after each successful delegation. */
   autoReview: boolean;
+  /**
+   * Post-delegation quality gate command. "" = auto-detect from package.json
+   * (`npm run check` / `npm test`), "off" = disabled, anything else is run as-is.
+   */
+  gateCommand: string;
 }
 
 /** Aggregate spend across all delegations in this session (not persisted). */

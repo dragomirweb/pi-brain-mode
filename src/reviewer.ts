@@ -37,6 +37,8 @@ export interface ReviewRequest {
   reads?: string[];
   /** Result of the gate the extension already ran, passed as context. */
   gate?: LastGate | null;
+  /** The worker's own summary of what it did — unverified, used to target checks. */
+  workerReport?: string;
 }
 
 export interface ReviewOutcome {
@@ -232,6 +234,14 @@ function assembleReviewTask(req: ReviewRequest): string {
 \`${req.gate.command}\` → ${req.gate.ok ? "PASS" : "FAIL"}
 ${req.gate.output ? `\`\`\`\n${req.gate.output}\n\`\`\`` : "(no output)"}
 Treat this as fresh; spot-check rather than fully re-running if it passed.`;
+  }
+  if (req.workerReport) {
+    task += `\n\n## Worker's report (unverified — use it to TARGET your checks, not as evidence)
+${req.workerReport}
+
+If the worker credibly reports running a check, spot-check it with at most ONE
+targeted command scoped to the changed files instead of re-running every
+repo-wide check yourself.`;
   }
   if (req.reads?.length) {
     task += `\n\n## Read for context\n${req.reads.map((path) => `- ${path}`).join("\n")}`;

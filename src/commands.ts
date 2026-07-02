@@ -45,6 +45,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         "thinking",
         "fallback",
         "reviewer",
+        "gate",
         "help",
       ];
       const trimmed = prefix.trim();
@@ -181,6 +182,15 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         ctx.ui.notify(msg.reviewerModelSet(state), "info");
         return;
       }
+      if (verb === "gate") {
+        if (value === "") {
+          ctx.ui.notify(msg.gateSet(state), "info");
+          return;
+        }
+        setGateCommand(pi, state, value);
+        ctx.ui.notify(msg.gateSet(state), "info");
+        return;
+      }
       if (verb === "help") {
         ctx.ui.notify(msg.brainUsage(), "info");
         return;
@@ -212,6 +222,7 @@ async function openSettingsMenu(
       options.push(`Auto-review — ${state.config.autoReview ? "ON" : "OFF"}`);
     }
 
+    options.push(`Quality gate — ${msg.gateLabel(state)}`);
     options.push(`Bash — ${state.config.allowBash ? "read-only" : "removed"}`);
 
     const choice = await ctx.ui.select("Brain Mode Settings", options);
@@ -257,6 +268,17 @@ async function openSettingsMenu(
         persist(pi, state);
         ctx.ui.notify(msg.autoReviewSet(state), "info");
         break;
+
+      case "Quality gate": {
+        const entered = await ctx.ui.input(
+          "Quality gate command",
+          "e.g. npm run check — empty/auto = auto-detect, off = disable",
+        );
+        if (entered === undefined) break;
+        setGateCommand(pi, state, entered);
+        ctx.ui.notify(msg.gateSet(state), "info");
+        break;
+      }
 
       case "Bash": {
         state.config.allowBash = !state.config.allowBash;
@@ -398,6 +420,18 @@ export function enable(pi: ExtensionAPI, state: BrainState): void {
 function disable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = false;
   pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, false));
+  persist(pi, state);
+}
+
+function setGateCommand(pi: ExtensionAPI, state: BrainState, value: string): void {
+  const normalized = value.trim();
+  const lowered = normalized.toLowerCase();
+  state.config.gateCommand =
+    normalized === "" || lowered === "auto"
+      ? ""
+      : lowered === "off" || lowered === "none"
+        ? "off"
+        : normalized;
   persist(pi, state);
 }
 

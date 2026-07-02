@@ -67,13 +67,18 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
       }
 
       const readOnly = params.readOnly === true;
-      const gateCommand = readOnly ? null : resolveGateCommand(pi, ctx.cwd);
+      const gateCommand = readOnly ? null : resolveGateCommand(state, pi, ctx.cwd);
       const previousFailure = readOnly ? undefined : previousFailureSection(state);
+      const gateInstructions = readOnly ? undefined : gateSection(gateCommand);
 
       // Try pi-subagents bridge first — returns null if not installed.
       const bridgeTask = buildBridgeTask(
         `Task: ${params.task}`,
-        combineContext(params.plan ? `## Plan\n${params.plan}` : undefined, previousFailure),
+        combineContext(
+          params.plan ? `## Plan\n${params.plan}` : undefined,
+          previousFailure,
+          gateInstructions,
+        ),
         params.reads ?? [],
       );
       const bridgeOutcome = await runViaBridge(
@@ -153,7 +158,7 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           const result = await runSubagent(
             model,
             readOnly ? runnerSystemPrompt() : workerSystemPrompt(),
-            assembleTask(params, previousFailure),
+            assembleTask(params, previousFailure, gateInstructions),
             readOnly ? "read,grep,find,ls,bash" : "read,edit,write,bash",
             signal,
             onUpdate,
@@ -224,6 +229,13 @@ async function finalizeDelegation(
 
   let final = withGate(result, gate);
 
+  if (!readOnly && !gateCommand && !signal?.aborted) {
+    final = appendText(
+      final,
+      "\n\n---\nQuality gate: none configured — auto-detect found no `check`/`test` script here. The diff is UNVERIFIED by a gate; verify via the review and your own reads, or set one with `/brain gate <cmd>`.",
+    );
+  }
+
   if (gate.ran && !gate.ok && state.consecutiveGateFailures >= 2) {
     final = appendText(
       final,
@@ -235,6 +247,7 @@ async function finalizeDelegation(
   const shouldAutoReview =
     !readOnly &&
     !workerFailed &&
+    params.review !== false &&
     state.config.reviewerEnabled &&
     state.config.autoReview &&
     (!gate.ran || gate.ok) &&
@@ -249,7 +262,10 @@ async function finalizeDelegation(
         intent: params.task,
         acceptanceCriteria: params.plan,
         reads: result.details?.changedFiles ?? [],
-        gate: state.lastGate,
+        // Only pass the gate result this delegation actually produced — a
+        // stale lastGate from an earlier delegation would mislead the reviewer.
+        gate: gate.ran ? state.lastGate : null,
+        workerReport: tail(textOf(result), 1200),
       },
       signal,
       onUpdate,
@@ -275,7 +291,11 @@ async function finalizeDelegation(
   return final;
 }
 
-function resolveGateCommand(pi: ExtensionAPI, cwd: string): string | null {
+function resolveGateCommand(state: BrainState, pi: ExtensionAPI, cwd: string): string | null {
+  const configured = state.config.gateCommand?.trim() ?? "";
+  if (configured) {
+    return configured.toLowerCase() === "off" ? null : configured;
+  }
   const flag = typeof pi.getFlag === "function" ? pi.getFlag("brain-gate-command") : undefined;
   if (typeof flag === "string") {
     const normalized = flag.trim();
@@ -444,11 +464,28 @@ function combineContext(...parts: Array<string | undefined>): string | undefined
   return filtered.length > 0 ? filtered.join("\n\n") : undefined;
 }
 
-function assembleTask(params: DelegateParamsT, previousFailure: string | undefined): string {
+/**
+ * Tell the worker exactly which gate to run (instead of guessing repo-wide
+ * checks), or how to verify when the project has no single gate command.
+ */
+function gateSection(gateCommand: string | null): string {
+  return gateCommand
+    ? `## Quality gate
+Before finishing, run \`${gateCommand}\` and fix any failures you introduced — the orchestrator re-runs it after you and a failure sends the task back to you.`
+    : `## Quality gate
+No project-wide gate is configured. Verify with TARGETED checks scoped to the files you changed (typecheck/lint/tests for those paths) instead of repo-wide builds, and do not repeat a check that already passed unless you changed files after it.`;
+}
+
+function assembleTask(
+  params: DelegateParamsT,
+  previousFailure: string | undefined,
+  gateInstructions: string | undefined,
+): string {
   let task = `Task: ${params.task}`;
 
   if (params.plan) task += `\n\n## Plan\n${params.plan}`;
   if (previousFailure) task += `\n\n${previousFailure}`;
+  if (gateInstructions) task += `\n\n${gateInstructions}`;
 
   if (params.reads?.length) {
     task += `\n\n## Read these files first for context\n${params.reads.map((path) => `- ${path}`).join("\n")}`;
