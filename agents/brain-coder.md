@@ -2,6 +2,7 @@
 name: brain-coder
 description: Coder worker that implements file-modifying tasks delegated by the Brain Mode orchestrator
 tools: read, edit, write, bash
+extensions: ""
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true

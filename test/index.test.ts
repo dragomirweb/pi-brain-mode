@@ -7,6 +7,7 @@ import { makeMockPi } from "./helpers/mock-pi.ts";
 describe("piBrain", () => {
   beforeEach(() => {
     vi.stubEnv("PI_BRAIN_WORKER", undefined);
+    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
   });
 
   afterEach(() => {
@@ -15,6 +16,18 @@ describe("piBrain", () => {
 
   it("registers nothing when invoked as a worker (PI_BRAIN_WORKER=1)", () => {
     vi.stubEnv("PI_BRAIN_WORKER", "1");
+    const { pi, commands, tools } = makeMockPi();
+
+    piBrain(pi);
+
+    expect(commands.size).toBe(0);
+    expect(tools.size).toBe(0);
+  });
+
+  it("registers nothing inside a pi-subagents child (PI_SUBAGENT_CHILD=1)", () => {
+    // Without this guard, Brain Mode would activate inside delegated workers
+    // and strip the edit/write tools they were given to do the work.
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
     const { pi, commands, tools } = makeMockPi();
 
     piBrain(pi);

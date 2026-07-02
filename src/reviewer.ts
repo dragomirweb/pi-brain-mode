@@ -81,6 +81,21 @@ export async function runReview(
   if (bridgeOutcome?.kind === "aborted") {
     return { result: bridgeOutcome.result, verdict: null };
   }
+  if (bridgeOutcome?.kind === "detached") {
+    trackUsage(state, bridgeOutcome.result.details.usage);
+    return {
+      result: {
+        ...bridgeOutcome.result,
+        content: [
+          {
+            type: "text",
+            text: `${resultText(bridgeOutcome.result)}\n\n⚠️ The reviewer DETACHED to ask a question via intercom — no verdict yet. Answer via intercom({"action":"pending"}) and wait for the 📨 subagent-result message, or verify the change yourself.`,
+          },
+        ],
+      },
+      verdict: null,
+    };
+  }
   if (bridgeOutcome?.kind === "success") {
     trackUsage(state, bridgeOutcome.result.details.usage);
     return finishReview(bridgeOutcome.result);
@@ -173,9 +188,12 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
   });
 }
 
+function resultText(result: AgentToolResult<WorkerDetails>): string {
+  return result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+}
+
 function finishReview(result: AgentToolResult<WorkerDetails>): ReviewOutcome {
-  const text =
-    result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
+  const text = resultText(result);
   const verdict = parseReviewVerdict(text);
   if (verdict !== "fail") return { result, verdict };
 

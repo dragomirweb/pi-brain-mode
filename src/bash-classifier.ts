@@ -78,6 +78,9 @@ const OPAQUE: RegExp[] = [
 ];
 
 const SAFE_SIMPLE_HEADS = new Set([
+  // Navigation only — each chained segment is still classified on its own,
+  // so `cd x && <mutation>` is still blocked at the mutation.
+  "cd",
   "cat",
   "bat",
   "head",
@@ -186,7 +189,7 @@ export function classifyBashCommand(command: string): BashClassification {
 }
 
 function classifySegment(segment: string): SegmentClassification {
-  const stripped = stripPrefixes(segment).trim();
+  const { stripped, tokens } = stripPrefixes(segment);
   if (!stripped) {
     return segmentBlock(
       "blocked_unparseable",
@@ -224,7 +227,7 @@ function classifySegment(segment: string): SegmentClassification {
     );
   }
 
-  if (!isAllowlisted(stripped)) {
+  if (!isAllowlisted(tokens, stripped)) {
     return segmentBlock(
       "blocked_unrecognized",
       "bash blocked: command is not on the read-only allowlist.",
@@ -235,14 +238,13 @@ function classifySegment(segment: string): SegmentClassification {
   return { verdict: "allow", code: "allowed_safe", reason: "read-only command segment" };
 }
 
-function isAllowlisted(segment: string): boolean {
-  let tokens: string[];
-  try {
-    tokens = tokenizeWords(segment);
-  } catch {
-    return false;
-  }
-
+/**
+ * `tokens` come from tokenizing the ORIGINAL segment (quote-aware). Never
+ * re-tokenize the joined `segment` string here: joining discards the quoting,
+ * so quoted args (e.g. a grep pattern containing `"`) would parse as
+ * unterminated quotes and fail closed on perfectly safe commands.
+ */
+function isAllowlisted(tokens: string[], segment: string): boolean {
   if (tokens.length === 0) {
     return false;
   }
@@ -401,8 +403,13 @@ function isSafeXargs(tokens: string[]): boolean {
     return false;
   }
 
-  const innerCommand = tokens.slice(innerStart).join(" ");
-  return classifySegment(innerCommand).verdict === "allow";
+  // Classify the inner command from its tokens directly — joining and
+  // re-parsing would mangle quoted arguments.
+  const innerTokens = tokens.slice(innerStart);
+  const inner = innerTokens.join(" ");
+  if (OPAQUE.some((pattern) => pattern.test(inner))) return false;
+  if (DESTRUCTIVE.some((pattern) => pattern.test(inner))) return false;
+  return isAllowlisted(innerTokens, inner);
 }
 
 function findXargsInnerStart(tokens: string[]): number {
@@ -511,12 +518,14 @@ function splitTopLevel(command: string): string[] {
   return segments;
 }
 
-function stripPrefixes(segment: string): string {
+function stripPrefixes(segment: string): { stripped: string; tokens: string[] } {
   let tokens: string[];
   try {
     tokens = tokenizeWords(segment);
   } catch {
-    return segment.trim();
+    // Unparseable (unterminated quote/escape): keep a non-empty `stripped` so
+    // the caller reaches the allowlist check, which fails closed on [].
+    return { stripped: segment.trim(), tokens: [] };
   }
 
   let index = 0;
@@ -535,7 +544,8 @@ function stripPrefixes(segment: string): string {
     index++;
   }
 
-  return tokens.slice(index).join(" ");
+  const rest = tokens.slice(index);
+  return { stripped: rest.join(" "), tokens: rest };
 }
 
 function tokenizeWords(segment: string): string[] {

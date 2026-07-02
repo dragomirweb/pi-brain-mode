@@ -2,6 +2,7 @@
 name: brain-reviewer
 description: Independent code reviewer that inspects the coder's changes and returns a structured verdict
 tools: read, edit, write, bash
+extensions: ""
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

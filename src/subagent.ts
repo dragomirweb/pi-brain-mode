@@ -250,6 +250,10 @@ function buildArgs(model: string, sysPromptFile: string, task: string, tools: st
     "json",
     "-p",
     "--no-session",
+    // Workers run with built-in tools only. Loading extensions in the child
+    // invites interference (Brain Mode stripping the worker's own edit/write,
+    // intercom rerouting its output) and slows startup.
+    "--no-extensions",
     "--model",
     model,
     "--tools",

@@ -33,6 +33,15 @@ const vectors: Array<{ input: string; expected: "allow" | "block" }> = [
   { input: "grep '=>' src/x.ts", expected: "allow" },
   { input: 'rg "a > b" src', expected: "allow" },
   { input: 'grep "a>b" file', expected: "allow" },
+  // Quoted args containing quote chars must not fail-closed on re-parsing
+  // (regression: session-log grep was blocked as "unterminated quote")
+  { input: 'tail -n 8 file.jsonl | grep -o \'"text":"[^"]*"\' | tail -20', expected: "allow" },
+  { input: `grep -o '"name": "[^"]*"' package.json`, expected: "allow" },
+  { input: `xargs grep -l '"version"' < /dev/null`, expected: "allow" },
+  // cd is navigation-only and allowed; mutations after it still block
+  { input: "cd src && ls -la", expected: "allow" },
+  { input: "cd clients/app && find . -name '*.vue' | head", expected: "allow" },
+  { input: "cd /tmp && rm -rf x", expected: "block" },
 
   // Must BLOCK (destructive)
   { input: "rm -rf build", expected: "block" },

@@ -70,6 +70,9 @@ interface SlashUpdate {
  * Outcome of a bridge attempt.
  *
  * - `success` / `aborted`: use `result` as the tool result.
+ * - `detached`: pi-intercom detached the run to ask the orchestrator a
+ *   question — the subagent is still going and the real result arrives later
+ *   as an intercom message. NOT a completed run.
  * - `error`: the bridge ran but the subagent failed. `infra` is true when the
  *   failure is an infrastructure/availability problem (unknown agent, model
  *   unavailable, missing context) where the caller's fallback spawner is
@@ -78,7 +81,11 @@ interface SlashUpdate {
 export type BridgeOutcome =
   | { kind: "success"; result: AgentToolResult<WorkerDetails> }
   | { kind: "aborted"; result: AgentToolResult<WorkerDetails> }
+  | { kind: "detached"; result: AgentToolResult<WorkerDetails> }
   | { kind: "error"; errorText: string; infra: boolean; result: AgentToolResult<WorkerDetails> };
+
+/** pi-subagents returns this text when pi-intercom detaches a run mid-flight. */
+const DETACHED_PREFIX = /^Detached for intercom coordination/i;
 
 function emptyUsage(): WorkerDetails["usage"] {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -316,6 +323,11 @@ export function runViaBridge(
           infra: isBridgeInfraError(errorText),
           result: { content: [{ type: "text", text: errorText }], details },
         });
+        return;
+      }
+
+      if (DETACHED_PREFIX.test(text.trim())) {
+        resolve({ kind: "detached", result: { content: [{ type: "text", text }], details } });
         return;
       }
 

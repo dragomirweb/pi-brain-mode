@@ -141,6 +141,7 @@ describe("delegate_to_coder", () => {
     expect(call.args).toContain("--mode");
     expect(call.args).toContain("json");
     expect(call.args).toContain("--no-session");
+    expect(call.args).toContain("--no-extensions");
     expect(call.args).toContain("--model");
     expect(call.args.at(call.args.indexOf("--model") + 1)).toBe(baseConfig.workerModel);
     expect(call.args).toContain("--tools");
@@ -754,6 +755,40 @@ describe("delegate_to_coder", () => {
     // Worker + gate only — the reviewer was not spawned.
     expect(spawnCalls).toHaveLength(2);
     expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "fail", verdict: null });
+  });
+
+  it("returns guidance without gate or review when the worker detaches via intercom", async () => {
+    const { tool, pi, state, ctx } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      { "brain-gate-command": "npm run check" },
+      { reviewerEnabled: true, autoReview: true },
+    );
+    respondViaBridge(pi, {
+      content: [
+        {
+          type: "text",
+          text: "Detached for intercom coordination: brain-coder. Reply to the supervisor request first.",
+        },
+      ],
+      details: {},
+    });
+
+    const result = await tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("DETACHED");
+    expect(text).toContain("intercom");
+    expect(text).toContain("NOT done");
+    expect(text).not.toContain("Quality gate");
+    expect(text).not.toContain("Independent review");
+    // No gate process and no reviewer were spawned.
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "coder",
+      gate: "none",
+      verdict: null,
+      task: expect.stringContaining("detached"),
+    });
   });
 
   it("skips the quality gate when the delegation is aborted", async () => {

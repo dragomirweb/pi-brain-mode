@@ -2,6 +2,7 @@
 name: brain-runner
 description: Read-only runner that executes verification commands/tests for the Brain Mode orchestrator and reports output verbatim
 tools: read, grep, find, ls, bash
+extensions: ""
 thinking: low
 systemPromptMode: replace
 inheritProjectContext: true

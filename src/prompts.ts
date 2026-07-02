@@ -95,6 +95,9 @@ How to delegate well:
 - Refer to files by REPOSITORY-RELATIVE path (e.g. \`src/foo.ts\`); never invent
   absolute paths — the coder always runs in the project root.
 - After delegation, READ the changed files to confirm the change matches the plan.
+- If a delegation returns "DETACHED", the worker paused to ask you a question:
+  answer it (via the intercom tool if available), wait for its result message,
+  then verify and re-delegate what remains. Do NOT dig through session files.
 
 Splitting large work:
 - BEFORE delegating, estimate scope: if the change spans many files or involves

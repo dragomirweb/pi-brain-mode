@@ -341,6 +341,27 @@ describe("delegate_to_reviewer", () => {
     expect(text).toContain("Review verdict: FAIL — re-delegate a fix");
   });
 
+  it("returns guidance without a verdict when the reviewer detaches via intercom", async () => {
+    const { tool, pi, ctx } = makeRegisteredReviewer(true, true);
+    pi.events.on("subagent:slash:request", (data: unknown) => {
+      const { requestId } = data as { requestId: string };
+      pi.events.emit("subagent:slash:response", {
+        requestId,
+        result: {
+          content: [{ type: "text", text: "Detached for intercom coordination: brain-reviewer." }],
+          details: {},
+        },
+        isError: false,
+      });
+    });
+
+    const result = await tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("DETACHED");
+    expect(text).toContain("no verdict");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("surfaces a bridge task failure without a fallback spawn", async () => {
     const { tool, pi, ctx } = makeRegisteredReviewer(true, true);
     pi.events.on("subagent:slash:request", (data: unknown) => {

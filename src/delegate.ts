@@ -88,6 +88,28 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
       if (bridgeOutcome?.kind === "aborted") {
         return bridgeOutcome.result;
       }
+      if (bridgeOutcome?.kind === "detached") {
+        // The worker paused to ask a question via intercom — nothing is done
+        // yet, so no gate and no review. Tell the orchestrator how to proceed.
+        trackUsage(state, bridgeOutcome.result.details.usage);
+        recordDelegation(state, {
+          kind: readOnly ? "run" : "coder",
+          task: `${summarizeTask(params.task)} (detached — awaiting intercom)`,
+          changedFiles: [],
+          gate: "none",
+          verdict: null,
+          cost: bridgeOutcome.result.details.usage?.cost ?? 0,
+          at: new Date().toISOString(),
+        });
+        persist(pi, state);
+        return appendText(
+          bridgeOutcome.result,
+          `\n\n⚠️ The worker DETACHED to ask you a question — the task is NOT done and no gate/review ran.
+1. Check \`intercom({"action":"pending"})\` and answer the worker's question.
+2. Wait for the 📨 subagent-result message with its final output.
+3. Then verify (\`git status\`, read the changed files) and re-delegate any remaining work.`,
+        );
+      }
       if (bridgeOutcome?.kind === "success") {
         trackUsage(state, bridgeOutcome.result.details.usage);
         return finalizeDelegation(

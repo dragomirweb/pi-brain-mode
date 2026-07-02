@@ -208,6 +208,42 @@ describe("runViaBridge", () => {
     expect(outcome.infra).toBe(true);
   });
 
+  it("classifies an intercom-detached run as detached, not success", async () => {
+    const promise = runViaBridge(
+      mockPi,
+      mockCtx,
+      "brain-coder",
+      "Task: something",
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const requestId = getRequestId(emitSpy);
+
+    mockPi.events.emit("subagent:slash:response", {
+      requestId,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "Detached for intercom coordination: brain-coder. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.",
+          },
+        ],
+        details: {},
+      },
+      isError: false,
+    });
+
+    const outcome = await promise;
+    expect(outcome?.kind).toBe("detached");
+    expect(outcome?.result.content[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("Detached for intercom coordination"),
+    });
+  });
+
   it("classifies task failures as non-infra errors", async () => {
     const promise = runViaBridge(
       mockPi,

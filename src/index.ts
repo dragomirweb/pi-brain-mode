@@ -9,7 +9,12 @@ import { registerReviewerTool } from "./reviewer.ts";
 import { createBrainState } from "./state.ts";
 
 export default function piBrain(pi: ExtensionAPI): void {
+  // Never activate inside a delegated child: our own fallback workers set
+  // PI_BRAIN_WORKER; pi-subagents marks every spawned child with
+  // PI_SUBAGENT_CHILD. Without this guard Brain Mode would strip edit/write
+  // from the very worker that was delegated the file changes.
   if (process.env.PI_BRAIN_WORKER === "1") return;
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   if (typeof pi.setActiveTools !== "function" || typeof pi.on !== "function") {
     pi.registerCommand?.("brain", {
