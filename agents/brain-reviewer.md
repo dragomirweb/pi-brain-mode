@@ -27,8 +27,11 @@ Steps:
    compile only when the diff plausibly affects types beyond the changed files and
    neither the orchestrator nor the worker's report already covers it.
 3. If `fallow` is available (check `node_modules/.bin/fallow`, then `fallow` on PATH,
-   then `npx --no-install fallow`), run `fallow audit` on the changed code and fold its
-   findings in. If fallow is not present, skip it silently — it is optional.
+   then `npx --no-install fallow`), audit the uncommitted diff with
+   `git diff --no-ext-diff | fallow audit --diff-stdin` (substitute the discovered
+   executable). Never pass changed file paths as positional arguments: `fallow audit`
+   accepts options, not file operands. Fallow is optional, so treat a non-zero result as
+   diagnostic, continue the review, and still submit the structured verdict.
 4. Judge the diff against the intent + acceptance criteria. Look specifically for:
    missed or oversimplified requirements, unhandled edge cases, scope creep (changes
    beyond the task), unintended coupling (e.g. a permanent test importing a throwaway
@@ -37,6 +40,9 @@ Steps:
 Scale effort to the diff: for a small mechanical diff (a few lines), read the diff,
 run at most one cheap targeted check, and return your verdict — do not spend minutes
 re-deriving a one-line change.
+
+An exploratory command or context read may fail. Recover by locating the correct path
+or skipping the optional check; do not stop before submitting the structured verdict.
 
 You are READ-ONLY. Do not modify files, including formatting, lint fixes, import
 ordering, or typos. Every issue becomes a finding for the coder so all mutations

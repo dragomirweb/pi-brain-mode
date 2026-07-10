@@ -91,6 +91,14 @@ describe("brain state machine", () => {
     );
   });
 
+  it("normalizes the brain-gate-command auto and off flags", () => {
+    const auto = makeMockPi({ flags: { "brain-gate-command": "auto" } });
+    const off = makeMockPi({ flags: { "brain-gate-command": "none" } });
+
+    expect(resolveConfig(auto.pi, baseConfig).gateCommand).toBe("");
+    expect(resolveConfig(off.pi, baseConfig).gateCommand).toBe("off");
+  });
+
   it("keeps delegate_to_coder active in the orchestrator toolset when enabled", () => {
     const { pi, setActiveToolsCalls } = makeMockPi();
     const state = createBrainState(baseConfig);

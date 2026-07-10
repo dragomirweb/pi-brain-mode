@@ -15,8 +15,8 @@ export interface BrainConfig {
   /** Automatically chain an independent review after each successful delegation. */
   autoReview: boolean;
   /**
-   * Post-delegation quality gate command. "" = auto-detect from package.json
-   * (`npm run check` / `npm test`), "off" = disabled, anything else is run as-is.
+   * Post-delegation quality gate command. "" = auto-detect from affected root
+   * or workspace packages, "off" = disabled, anything else is run as-is.
    */
   gateCommand: string;
 }
@@ -30,8 +30,22 @@ export interface SessionUsage {
 }
 
 export type ReviewVerdict = "pass" | "warn" | "fail";
+export type DelegationOutcome =
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "aborted"
+  | "timed-out"
+  | "unknown";
+export type ReviewStatus = ReviewVerdict | "error" | "skipped" | "not-run" | "unknown";
 
-/** One completed delegation, kept so the orchestrator survives compaction. */
+export interface CheckSummary {
+  pass: number;
+  fail: number;
+  skipped: number;
+}
+
+/** One delegation attempt, kept so the orchestrator survives compaction. */
 export interface DelegationRecord {
   kind: "coder" | "run" | "reviewer";
   /** First line of the delegated task, truncated. */
@@ -41,6 +55,20 @@ export interface DelegationRecord {
   verdict: ReviewVerdict | null;
   cost: number;
   at: string;
+  /** Explicit lifecycle result; absent only on journals written before v4. */
+  outcome?: DelegationOutcome;
+  /** Review lifecycle, including skipped/error states that `verdict` cannot represent. */
+  reviewStatus?: ReviewStatus;
+  /** Compact worker/runner check counts when structured output was available. */
+  checks?: CheckSummary;
+  /** Worker and reviewer costs separated while `cost` remains their total. */
+  workerCost?: number;
+  reviewCost?: number;
+  durationMs?: number;
+  model?: string;
+  reviewModel?: string;
+  runId?: string;
+  error?: string;
 }
 
 /** Result of the most recent post-delegation quality gate run. */
@@ -153,6 +181,6 @@ export function applyBrainTools(current: string[], config: BrainConfig, active: 
 export const PERSIST_KEY = "brain-v1";
 
 export interface BrainPersisted {
-  v: 3;
+  v: 4;
   journal: DelegationRecord[];
 }

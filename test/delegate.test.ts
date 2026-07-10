@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -196,7 +196,7 @@ describe("delegate_to_coder", () => {
   });
 
   it("throws with stderr tail when the worker exits nonzero", async () => {
-    const { tool, ctx } = makeRegisteredTool(true);
+    const { tool, ctx, state } = makeRegisteredTool(true);
 
     const resultPromise = tool.execute(
       "call-1",
@@ -210,6 +210,11 @@ describe("delegate_to_coder", () => {
     children[0].close(1);
 
     await expect(resultPromise).rejects.toThrow(/worker failed loudly/);
+    expect(state.journal.at(-1)).toMatchObject({
+      outcome: "failed",
+      reviewStatus: "not-run",
+      error: expect.stringContaining("worker failed loudly"),
+    });
   });
 
   it("throws when the final assistant message has stopReason error", async () => {
@@ -240,7 +245,7 @@ describe("delegate_to_coder", () => {
   it("times out, returns partial progress, and kills the child", async () => {
     // Override spawn timeout to something tiny for the test
     setSpawnTimeoutMs(20);
-    const { tool: tool2, ctx } = makeRegisteredTool(true, "/tmp/cwd");
+    const { tool: tool2, ctx, state } = makeRegisteredTool(true, "/tmp/cwd");
 
     const resultPromise = tool2.execute(
       "call-1",
@@ -255,6 +260,11 @@ describe("delegate_to_coder", () => {
     expect(text).toContain("Worker timed out");
     expect(text).toContain("To continue");
     expect(children[0].kill).toHaveBeenCalledWith("SIGTERM");
+    expect(state.journal.at(-1)).toMatchObject({
+      outcome: "timed-out",
+      reviewStatus: "not-run",
+      error: "Worker timed out after 20ms.",
+    });
   });
 
   it("includes changed files in timeout partial progress", async () => {
@@ -480,7 +490,10 @@ describe("delegate_to_coder", () => {
             status: "completed",
             summary: "Worker done: changed src/a.ts",
             changedFiles: ["src/a.ts"],
-            checks: [],
+            checks: [
+              { command: "npm test", status: "pass", summary: "Tests passed" },
+              { command: "npm run lint", status: "skipped", summary: "Not needed" },
+            ],
             notes: [],
           },
         },
@@ -502,6 +515,16 @@ describe("delegate_to_coder", () => {
     expect(spawnCalls[0].command).toBe("npm run check");
     expect(state.sessionUsage.runs).toBe(1);
     expect(state.sessionUsage.cost).toBeCloseTo(0.05);
+    expect(state.journal.at(-1)).toMatchObject({
+      outcome: "completed",
+      reviewStatus: "not-run",
+      checks: { pass: 1, fail: 0, skipped: 1 },
+      workerCost: 0.05,
+      reviewCost: 0,
+      model: baseConfig.workerModel,
+      runId: "run-1",
+    });
+    expect(state.journal.at(-1)?.durationMs).toBeTypeOf("number");
   });
 
   it("does not auto-review an RPC worker that reports blocked", async () => {
@@ -532,7 +555,12 @@ describe("delegate_to_coder", () => {
     expect(text).toContain("worker reported BLOCKED");
     expect(text).not.toContain("Independent review");
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", verdict: null });
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "coder",
+      verdict: null,
+      outcome: "blocked",
+      reviewStatus: "skipped",
+    });
   });
 
   it("falls back to the spawner when RPC reports an infrastructure error", async () => {
@@ -722,6 +750,7 @@ describe("delegate_to_coder", () => {
       message: {
         role: "assistant",
         content: [{ type: "text", text: "changed src/a.ts" }],
+        usage: { input: 10, output: 20, cost: { total: 0.03 }, totalTokens: 30 },
         stopReason: "end",
       },
     });
@@ -742,6 +771,7 @@ describe("delegate_to_coder", () => {
       message: {
         role: "assistant",
         content: [{ type: "text", text: "VERDICT: warn\nFINDINGS: minor nit" }],
+        usage: { input: 5, output: 10, cost: { total: 0.02 }, totalTokens: 15 },
         stopReason: "end",
       },
     });
@@ -757,6 +787,13 @@ describe("delegate_to_coder", () => {
       gate: "pass",
       verdict: "warn",
       changedFiles: ["src/a.ts"],
+      outcome: "completed",
+      reviewStatus: "warn",
+      workerCost: 0.03,
+      reviewCost: 0.02,
+      cost: 0.05,
+      model: baseConfig.workerModel,
+      reviewModel: baseConfig.reviewerModel,
     });
   });
 
@@ -811,6 +848,8 @@ describe("delegate_to_coder", () => {
       gate: "pass",
       verdict: null,
       changedFiles: ["src/a.ts"],
+      outcome: "completed",
+      reviewStatus: "error",
     });
   });
 
@@ -846,7 +885,13 @@ describe("delegate_to_coder", () => {
     expect(text).not.toContain("Independent review");
     // Worker + gate only — the reviewer was not spawned.
     expect(spawnCalls).toHaveLength(2);
-    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", gate: "fail", verdict: null });
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "coder",
+      gate: "fail",
+      verdict: null,
+      outcome: "failed",
+      reviewStatus: "skipped",
+    });
   });
 
   it("skips the auto-review when the delegation passes review: false", async () => {
@@ -932,6 +977,61 @@ describe("delegate_to_coder", () => {
     children[2].close(0);
 
     await expect(resultPromise).resolves.toBeDefined();
+  });
+
+  it("discovers a nested workspace gate with the repository package manager", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "brain-workspace-gate-test-"));
+    rpcDirs.push(cwd);
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "workspace" }));
+    writeFileSync(join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const packageDir = join(cwd, "clients", "app");
+    const sourceDir = join(packageDir, "src");
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(
+      join(packageDir, "package.json"),
+      JSON.stringify({ scripts: { tsc: "vue-tsc --noEmit" } }),
+    );
+    writeFileSync(join(sourceDir, "feature.ts"), "export {};\n");
+    const apiDir = join(cwd, "clients", "api");
+    mkdirSync(join(apiDir, "src"), { recursive: true });
+    writeFileSync(
+      join(apiDir, "package.json"),
+      JSON.stringify({ scripts: { verify: "tsc --noEmit" } }),
+    );
+
+    const { tool, ctx } = makeRegisteredTool(true, cwd);
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "update the app", reads: ["clients/app/src/feature.ts"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    expect(spawnCalls[0].args.at(-1)).toContain("run `(cd 'clients/app' && pnpm run tsc)`");
+    children[0].pushStdout({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" },
+    });
+    children[0].pushStdout({
+      type: "tool_execution_end",
+      toolName: "edit",
+      args: { path: "clients/api/src/handler.ts" },
+      isError: false,
+    });
+    children[0].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    expect(spawnCalls[1]).toMatchObject({
+      command: "(cd 'clients/api' && pnpm run verify) && (cd 'clients/app' && pnpm run tsc)",
+      options: { cwd },
+    });
+    children[1].close(0);
+
+    const result = await resultPromise;
+    expect((result.content[0] as { text: string }).text).toContain("Quality gate");
+    expect((result.content[0] as { text: string }).text).toContain("PASS");
   });
 
   it("tells the worker to use targeted checks when no gate is configured", async () => {

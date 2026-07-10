@@ -14,4 +14,11 @@ describe("packaged brain agents", () => {
     expect(definition).toContain('extensions: ""');
     expect(definition).toContain("When `structured_output` is available");
   });
+
+  it("gives the packaged reviewer the safe Fallow invocation", () => {
+    const definition = readFileSync("agents/brain-reviewer.md", "utf8");
+
+    expect(definition).toContain("git diff --no-ext-diff | fallow audit --diff-stdin");
+    expect(definition).toContain("Never pass changed file paths as positional arguments");
+  });
 });

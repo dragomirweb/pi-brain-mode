@@ -5,6 +5,7 @@ import {
   formatSessionSpend,
   journalText,
   recentDelegationsSection,
+  reviewerSystemPrompt,
   runnerSystemPrompt,
   statusLine,
   workerSystemPrompt,
@@ -94,6 +95,14 @@ describe("prompts", () => {
     expect(prompt.toLowerCase()).toContain("summarize");
   });
 
+  it("gives the reviewer a valid, recoverable Fallow workflow", () => {
+    const prompt = reviewerSystemPrompt();
+
+    expect(prompt).toContain("git diff --no-ext-diff | fallow audit --diff-stdin");
+    expect(prompt).toContain("Never pass changed file paths as positional arguments");
+    expect(prompt).toContain("still submit the structured verdict");
+  });
+
   it("status line reflects the thinking model, worker model, and bash mode", () => {
     const enabled = makeBrainState(config);
     enabled.enabled = true;
@@ -118,6 +127,21 @@ describe("prompts", () => {
     expect(statusLine(withReviewer, "openai-codex/gpt-5.5")).toContain(
       "Reviewer: ON (claude-opus-4-8, auto-review OFF)",
     );
+
+    const sameModelReviewer = makeBrainState({
+      ...config,
+      reviewerEnabled: true,
+      reviewerModel: config.workerModel,
+    });
+    expect(statusLine(sameModelReviewer, config.workerModel)).toContain("same model as worker");
+
+    const automaticReviewer = makeBrainState({
+      ...config,
+      reviewerEnabled: true,
+      reviewerModel: "",
+    });
+    expect(statusLine(automaticReviewer, config.workerModel)).toContain("claude-opus-4-8 (auto)");
+    expect(statusLine(automaticReviewer, config.workerModel)).not.toContain("same model as worker");
 
     const noBash = makeBrainState({ ...config, allowBash: false });
     expect(statusLine(noBash, "openai-codex/gpt-5.5")).toContain("Orchestrator bash: removed");
@@ -202,6 +226,9 @@ describe("prompts", () => {
       verdict: "warn",
       cost: 0.05,
       at: "2026-07-02T00:00:00.000Z",
+      outcome: "completed",
+      reviewStatus: "warn",
+      checks: { pass: 2, fail: 0, skipped: 1 },
     });
     recordDelegation(state, {
       kind: "run",
@@ -233,9 +260,18 @@ describe("prompts", () => {
       verdict: null,
       cost: 0.12,
       at: "2026-07-02T00:00:00.000Z",
+      outcome: "failed",
+      reviewStatus: "skipped",
+      checks: { pass: 1, fail: 1, skipped: 0 },
+      durationMs: 1250,
+      error: "typecheck failed",
     });
     const text = journalText(state);
-    expect(text).toContain("1. [coder] fix the bug → src/a.ts — gate FAIL ($0.12)");
+    expect(text).toContain(
+      "1. [coder] fix the bug → src/a.ts — FAILED — gate FAIL — review SKIPPED",
+    );
+    expect(text).toContain("checks 1 pass/1 fail/0 skipped — 1.3s ($0.12)");
+    expect(text).toContain("error: typecheck failed");
   });
 
   it("frames the runner as read-only and verbatim", () => {

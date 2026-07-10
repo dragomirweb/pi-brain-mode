@@ -52,16 +52,19 @@ interface RpcStatusStep {
   toolCalls?: Array<{ text?: string; expandedText?: string }>;
   structuredOutput?: unknown;
   structuredOutputPath?: string;
+  sessionFile?: string;
 }
 
 interface RpcStatus {
   lifecycleArtifactVersion?: number;
+  runId?: string;
   state?: "queued" | "running" | "complete" | "failed" | "paused";
   error?: string;
   currentStep?: number;
   steps?: RpcStatusStep[];
   totalTokens?: { input?: number; output?: number; total?: number };
   totalCost?: { costUsd?: number };
+  sessionFile?: string;
 }
 
 type OutputValidator = (value: unknown) => string[];
@@ -131,6 +134,7 @@ function makeDetails(
     usage,
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(structuredOutput === undefined ? {} : { structuredOutput }),
+    ...(typeof status?.runId === "string" ? { runId: status.runId } : {}),
   };
 }
 
@@ -257,7 +261,70 @@ async function readStructuredOutput(status: RpcStatus, asyncDir: string): Promis
       }
     }
   }
+  const sessionFiles = [
+    ...steps
+      .map((step) => step.sessionFile)
+      .filter((path): path is string => typeof path === "string" && path.trim().length > 0),
+    ...(status.sessionFile ? [status.sessionFile] : []),
+  ];
+  for (const sessionFile of [...new Set(sessionFiles)].reverse()) {
+    const value = await readRecoveredStructuredOutputFromSession(sessionFile, asyncDir);
+    if (value !== undefined) return value;
+  }
   return undefined;
+}
+
+/**
+ * Recover a final structured-output call from a child transcript when
+ * pi-subagents marks the run failed because it remembers an earlier tool error
+ * that the child subsequently handled. Output submitted before a later failed
+ * tool call is intentionally rejected as stale.
+ */
+async function readRecoveredStructuredOutputFromSession(
+  sessionFile: string,
+  asyncDir: string,
+): Promise<unknown> {
+  try {
+    const path = isAbsolute(sessionFile) ? sessionFile : join(asyncDir, sessionFile);
+    const lines = (await readFile(path, "utf8")).split(/\r?\n/);
+    let lastErrorIndex = -1;
+    let candidateIndex = -1;
+    let candidate: unknown;
+
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index]?.trim();
+      if (!line) continue;
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line) as unknown;
+      } catch {
+        continue;
+      }
+      if (!isObject(entry) || entry.type !== "message" || !isObject(entry.message)) continue;
+      const message = entry.message;
+      if (message.role === "toolResult" && message.isError === true) {
+        lastErrorIndex = index;
+        continue;
+      }
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      for (const item of message.content) {
+        if (
+          isObject(item) &&
+          item.type === "toolCall" &&
+          item.name === "structured_output" &&
+          isObject(item.arguments) &&
+          "value" in item.arguments
+        ) {
+          candidate = item.arguments.value;
+          candidateIndex = index;
+        }
+      }
+    }
+
+    return candidateIndex > lastErrorIndex ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function usageFromStatus(status: RpcStatus): WorkerDetails["usage"] {
@@ -478,17 +545,28 @@ export async function runViaRpc(
 
       if (status.state === "failed" || status.state === "paused") {
         const stepError = status.steps?.find((step) => step.error)?.error;
-        const errorText = status.error || stepError || `pi-subagents run ${status.state}.`;
+        const errorText = stepError || status.error || `pi-subagents run ${status.state}.`;
         const guardedNoEditResult = [status.error, stepError].some(
           (message) => typeof message === "string" && NO_EDIT_COMPLETION_GUARD.test(message),
         );
-        if (status.state === "failed" && guardedNoEditResult) {
+        if (status.state === "failed") {
           const structured = await readStructuredOutput(status, started.asyncDir);
           const usage = usageFromStatus(status);
           const validation = validateStructuredOutput(structured, validateOutput);
           const reportsBlocked = isObject(structured) && structured.status === "blocked";
-          if (validation.ok && (allowNoEdits || reportsBlocked)) {
-            const text = `\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\``;
+          const fatalLifecycleFailure =
+            /\b(?:timed out|timeout|turn budget|interrupted|aborted)\b/i.test(
+              `${stepError ?? ""}\n${status.error ?? ""}`,
+            );
+          if (
+            validation.ok &&
+            !fatalLifecycleFailure &&
+            (!guardedNoEditResult || allowNoEdits || reportsBlocked)
+          ) {
+            const recoveryNote = guardedNoEditResult
+              ? "Recovered the valid final structured result from a no-edit completion guard."
+              : `Recovered the valid final structured result after an earlier child-tool error: ${truncate(errorText, 240)}`;
+            const text = `\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\`\n\n⚠️ ${recoveryNote}`;
             return {
               kind: "success",
               result: {

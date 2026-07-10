@@ -55,7 +55,6 @@ const DESTRUCTIVE: RegExp[] = [
   /^apt(-get)?\s+install\b/,
   /^brew\s+install\b/,
   /^go\s+install\b/,
-  /^git\s+(commit|push|checkout|switch|clean|rebase|merge|stash|rm|mv|apply)\b/,
   /^git\s+reset\b.*(?:^|\s)--hard(?:\s|$)/,
   /^git\s+tag\b.*(?:^|\s)-d(?:\s|$)/,
   /^git\s+branch\b.*(?:^|\s)-d(?:\s|$)/,
@@ -366,9 +365,17 @@ function hasFdExecFlag(tokens: string[]): boolean {
 function isSafeGit(tokens: string[]): boolean {
   const subcommand = tokens[1] ?? "";
   if (
-    ["status", "log", "diff", "show", "blame", "rev-parse", "ls-files", "describe"].includes(
-      subcommand,
-    )
+    [
+      "status",
+      "log",
+      "diff",
+      "show",
+      "blame",
+      "rev-parse",
+      "merge-base",
+      "ls-files",
+      "describe",
+    ].includes(subcommand)
   ) {
     return true;
   }

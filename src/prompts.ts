@@ -57,8 +57,16 @@ export function recentDelegationsSection(state: BrainState): string {
         ? ` → ${r.changedFiles.slice(0, 5).join(", ")}${r.changedFiles.length > 5 ? ", …" : ""}`
         : "";
     const gate = r.gate === "none" ? "" : ` — gate ${r.gate.toUpperCase()}`;
-    const verdict = r.verdict ? ` — review ${r.verdict.toUpperCase()}` : "";
-    return `- [${r.kind}] ${r.task}${files}${gate}${verdict}`;
+    const outcome = r.outcome ? ` — ${r.outcome.toUpperCase()}` : "";
+    const review = r.reviewStatus
+      ? ` — review ${r.reviewStatus.toUpperCase()}`
+      : r.verdict
+        ? ` — review ${r.verdict.toUpperCase()}`
+        : "";
+    const checks = r.checks
+      ? ` — checks ${r.checks.pass}/${r.checks.fail}/${r.checks.skipped}`
+      : "";
+    return `- [${r.kind}] ${r.task}${files}${outcome}${gate}${review}${checks}`;
   });
   return `
 
@@ -128,9 +136,9 @@ Splitting large work:
   • **By layer**: data model → business logic → API surface → UI.
 
 How to verify a delegated change:
-- A quality gate (e.g. \`npm run check\`) runs AUTOMATICALLY after each delegation —
-  read the "Quality gate: PASS/FAIL" line in the result. FAIL means it is NOT done;
-  re-delegate a fix with the gate output.${
+- When a quality gate is configured or discovered from the root/workspace package,
+  it runs AUTOMATICALLY after each delegation — read the "Quality gate: PASS/FAIL"
+  line in the result. FAIL means it is NOT done; re-delegate a fix with the gate output.${
     state.config.reviewerEnabled && state.config.autoReview
       ? `
 - An INDEPENDENT REVIEW also runs automatically after each successful delegation —
@@ -232,8 +240,11 @@ Steps:
    compile only when the diff plausibly affects types beyond the changed files and
    neither the orchestrator nor the worker's report already covers it.
 3. If \`fallow\` is available (check \`node_modules/.bin/fallow\`, then \`fallow\` on PATH,
-   then \`npx --no-install fallow\`), run \`fallow audit\` on the changed code and fold its
-   findings in. If fallow is not present, skip it silently — it is optional.
+   then \`npx --no-install fallow\`), audit the uncommitted diff with
+   \`git diff --no-ext-diff | fallow audit --diff-stdin\` (substitute the discovered
+   executable). Never pass changed file paths as positional arguments: \`fallow audit\`
+   accepts options, not file operands. Fallow is optional, so treat a non-zero result as
+   diagnostic, continue the review, and still submit the structured verdict.
 4. Judge the diff against the intent + acceptance criteria. Look specifically for:
    missed or oversimplified requirements, unhandled edge cases, scope creep (changes
    beyond the task), unintended coupling (e.g. a permanent test importing a throwaway
@@ -242,6 +253,9 @@ Steps:
 Scale effort to the diff: for a small mechanical diff (a few lines), read the diff,
 run at most one cheap targeted check, and return your verdict — do not spend minutes
 re-deriving a one-line change.
+
+An exploratory command or context read may fail. Recover by locating the correct path
+or skipping the optional check; do not stop before submitting the structured verdict.
 
 You are READ-ONLY. Do not modify files, including formatting, lint fixes, import
 ordering, or typos. Every issue becomes a finding for the coder so all mutations
@@ -326,7 +340,7 @@ export function brainUsage(): string {
 /brain reviewer on|off|always|manual|auto|<model-id>
   (always/manual toggle auto-review; auto = use the orchestrator model)
 /brain gate <cmd|auto|off>
-  (quality gate command; auto = detect check/test script in package.json)`;
+  (quality gate command; auto = detect root/affected-workspace verification scripts)`;
 }
 
 /** Human-readable label for the configured quality gate. */
@@ -334,7 +348,7 @@ export function gateLabel(state: BrainState): string {
   const configured = state.config.gateCommand?.trim() ?? "";
   if (configured.toLowerCase() === "off") return "OFF";
   if (configured) return configured;
-  return "auto-detect (`check`/`test` script)";
+  return "auto-detect (root/workspace verification script)";
 }
 
 export function gateSet(state: BrainState): string {
@@ -354,9 +368,21 @@ export function statusLine(state: BrainState, thinkingModelId: string): string {
       ? ` (fallbacks: ${state.config.fallbackModels.join(", ")})`
       : "";
   const bashMode = state.config.allowBash ? "gated (read-only)" : "removed";
-  const reviewerModelLabel = state.config.reviewerModel || `${thinkingModelId} (orchestrator)`;
+  const automaticReviewerModel =
+    thinkingModelId === state.config.workerModel
+      ? (state.config.fallbackModels.find((model) => model !== state.config.workerModel) ??
+        thinkingModelId)
+      : thinkingModelId;
+  const reviewerModel = state.config.reviewerModel || automaticReviewerModel;
+  const reviewerModelLabel = state.config.reviewerModel
+    ? state.config.reviewerModel
+    : `${automaticReviewerModel} (auto)`;
+  const reviewerDiversity =
+    state.config.reviewerEnabled && reviewerModel === state.config.workerModel
+      ? ", ⚠ same model as worker"
+      : "";
   const reviewerMode = state.config.reviewerEnabled
-    ? `ON (${reviewerModelLabel}, auto-review ${state.config.autoReview ? "ON" : "OFF"})`
+    ? `ON (${reviewerModelLabel}, auto-review ${state.config.autoReview ? "ON" : "OFF"}${reviewerDiversity})`
     : "OFF";
   const spendLine =
     state.sessionUsage.runs > 0 ? `\nSession delegations: ${formatSessionSpend(state)}` : "";
@@ -372,10 +398,21 @@ export function journalText(state: BrainState): string {
   if (state.journal.length === 0) return "No delegations recorded this session.";
   const lines = state.journal.map((r, i) => {
     const files = r.changedFiles.length > 0 ? ` → ${r.changedFiles.join(", ")}` : "";
+    const outcome = r.outcome ? ` — ${r.outcome.toUpperCase()}` : "";
     const gate = r.gate === "none" ? "" : ` — gate ${r.gate.toUpperCase()}`;
-    const verdict = r.verdict ? ` — review ${r.verdict.toUpperCase()}` : "";
+    const review = r.reviewStatus
+      ? ` — review ${r.reviewStatus.toUpperCase()}`
+      : r.verdict
+        ? ` — review ${r.verdict.toUpperCase()}`
+        : "";
+    const checks = r.checks
+      ? ` — checks ${r.checks.pass} pass/${r.checks.fail} fail/${r.checks.skipped} skipped`
+      : "";
+    const duration =
+      typeof r.durationMs === "number" ? ` — ${(r.durationMs / 1000).toFixed(1)}s` : "";
     const cost = r.cost > 0 ? ` ($${r.cost.toFixed(2)})` : "";
-    return `${i + 1}. [${r.kind}] ${r.task}${files}${gate}${verdict}${cost}`;
+    const error = r.error ? `\n   error: ${r.error}` : "";
+    return `${i + 1}. [${r.kind}] ${r.task}${files}${outcome}${gate}${review}${checks}${duration}${cost}${error}`;
   });
   return `Delegation log (${state.journal.length}):\n${lines.join("\n")}`;
 }

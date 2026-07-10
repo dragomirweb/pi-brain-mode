@@ -69,14 +69,21 @@ describe("durable settings", () => {
 });
 
 describe("session journal persistence", () => {
-  it("stores only a v3 journal entry", () => {
+  it("stores only a v4 journal entry", () => {
     const { pi, entries } = makeMockPi();
     const state = createBrainState(config);
     state.enabled = true;
 
     persistSession(pi, state);
 
-    expect(entries).toEqual([{ customType: PERSIST_KEY, data: { v: 3, journal: [] } }]);
+    expect(entries).toEqual([{ customType: PERSIST_KEY, data: { v: 4, journal: [] } }]);
+  });
+
+  it("continues to load v3 journal entries", () => {
+    const { pi, ctx } = makeMockPi();
+    pi.appendEntry(PERSIST_KEY, { v: 3, journal: [] });
+
+    expect(loadLatest(ctx.sessionManager)).toEqual({ journal: [] });
   });
 
   it("loads legacy config for migration but does not expose its enabled toggle", () => {

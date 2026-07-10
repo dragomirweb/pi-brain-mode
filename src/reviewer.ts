@@ -50,11 +50,17 @@ export interface ReviewOutcome {
 }
 
 export function resolveReviewerModel(state: BrainState, ctx: ExtensionContext): string {
-  return (
-    state.config.reviewerModel.trim() ||
-    (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "") ||
-    state.config.workerModel
-  );
+  const configured = state.config.reviewerModel.trim();
+  if (configured) return configured;
+
+  const orchestratorModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+  if (orchestratorModel && orchestratorModel === state.config.workerModel) {
+    return (
+      state.config.fallbackModels.find((model) => model !== state.config.workerModel) ??
+      orchestratorModel
+    );
+  }
+  return orchestratorModel || state.config.workerModel;
 }
 
 /**
@@ -73,7 +79,9 @@ export async function runReview(
   const task = assembleReviewTask(req);
 
   // Try pi-subagents' documented RPC first — returns null if unavailable.
-  const rpcTask = buildRpcTask(task, undefined, req.reads ?? [], "review");
+  // assembleReviewTask includes the read list for both RPC and process fallback
+  // paths; do not prepend it a second time in the RPC wrapper.
+  const rpcTask = buildRpcTask(task, undefined, [], "review");
   const rpcOutcome = await runViaRpc(
     pi,
     ctx,
@@ -159,6 +167,7 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
         throw new Error("Reviewer is off. Enable it with /brain reviewer on.");
       }
 
+      const startedAt = Date.now();
       const lastCoder = lastCoderRecord(state);
       const intent = params.intent?.trim() || lastCoder?.task;
       if (!intent) {
@@ -169,30 +178,67 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
       const reads = params.reads?.length ? params.reads : (lastCoder?.changedFiles ?? []);
       const gate = !params.intent?.trim() && lastCoder?.gate !== "none" ? state.lastGate : null;
 
-      const { result, verdict } = await runReview(
-        pi,
-        state,
-        ctx,
-        {
-          intent,
-          acceptanceCriteria: params.acceptanceCriteria,
-          focus: params.focus,
-          base: params.base,
-          reads,
-          gate,
-        },
-        signal,
-        onUpdate,
-      );
+      const reviewerModel = resolveReviewerModel(state, ctx);
+      let result: AgentToolResult<WorkerDetails>;
+      let verdict: ReviewVerdict | null;
+      try {
+        ({ result, verdict } = await runReview(
+          pi,
+          state,
+          ctx,
+          {
+            intent,
+            acceptanceCriteria: params.acceptanceCriteria,
+            focus: params.focus,
+            base: params.base,
+            reads,
+            gate,
+          },
+          signal,
+          onUpdate,
+        ));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        recordDelegation(state, {
+          kind: "reviewer",
+          task: summarizeTask(intent),
+          changedFiles: [],
+          gate: "none",
+          verdict: null,
+          cost: 0,
+          at: new Date().toISOString(),
+          outcome: signal?.aborted ? "aborted" : "failed",
+          reviewStatus: "error",
+          workerCost: 0,
+          reviewCost: 0,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          model: reviewerModel,
+          error: message,
+        });
+        persistSession(pi, state);
+        throw error;
+      }
 
+      const cost = result.details?.usage?.cost ?? 0;
+      const reviewStatus = verdict ?? "error";
       recordDelegation(state, {
         kind: "reviewer",
         task: summarizeTask(intent),
         changedFiles: [],
         gate: "none",
         verdict,
-        cost: result.details?.usage?.cost ?? 0,
+        cost,
         at: new Date().toISOString(),
+        outcome: signal?.aborted ? "aborted" : verdict ? "completed" : "failed",
+        reviewStatus,
+        workerCost: 0,
+        reviewCost: cost,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        model: reviewerModel,
+        ...(result.details?.runId ? { runId: result.details.runId } : {}),
+        ...(!verdict && !signal?.aborted
+          ? { error: "Independent review returned no valid verdict." }
+          : {}),
       });
       persistSession(pi, state);
 

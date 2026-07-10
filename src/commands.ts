@@ -256,7 +256,7 @@ async function openSettingsMenu(
       case "Quality gate": {
         const entered = await ctx.ui.input(
           "Quality gate command",
-          "e.g. npm run check — empty/auto = auto-detect, off = disable",
+          "e.g. npm run check — empty/auto = detect root/workspace gate, off = disable",
         );
         if (entered === undefined) break;
         await setGateCommand(state, ctx, entered);

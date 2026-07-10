@@ -36,7 +36,7 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
   pi.registerFlag("brain-gate-command", {
     type: "string",
     description:
-      "Post-delegation quality gate command (default: auto-detect `npm run check`; `off` to disable).",
+      "Post-delegation quality gate command (default: auto-detect a root/workspace verification script; `off` to disable).",
   });
   pi.registerFlag("brain-reviewer", {
     type: "boolean",
@@ -139,7 +139,9 @@ export function resolveModel(registry: ModelRegistry, idStr: string): Model | un
 function resolveGateCommandConfig(flag: unknown, base: string | undefined): string {
   if (typeof flag === "string" && flag.trim().length > 0) {
     const normalized = flag.trim();
-    return ["off", "none"].includes(normalized.toLowerCase()) ? "off" : normalized;
+    const lowered = normalized.toLowerCase();
+    if (lowered === "auto") return "";
+    return ["off", "none"].includes(lowered) ? "off" : normalized;
   }
   return typeof base === "string" ? base : "";
 }

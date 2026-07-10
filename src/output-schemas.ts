@@ -98,16 +98,32 @@ export function validateCoderOutput(value: unknown): string[] {
   const errors = schemaErrors(coderValidator, value);
   if (errors.length > 0) return errors;
 
-  const output = value as { status: "completed" | "blocked"; changedFiles: string[] };
+  const output = value as {
+    status: "completed" | "blocked";
+    changedFiles: string[];
+    checks: Array<{ status: "pass" | "fail" | "skipped" }>;
+  };
   if (output.status === "completed" && output.changedFiles.length === 0) {
     errors.push("A completed coder run must report at least one changed file.");
+  }
+  if (output.status === "completed" && output.checks.some((check) => check.status === "fail")) {
+    errors.push("A completed coder run must not report failed checks.");
   }
   return errors;
 }
 
 /** Validate read-only runner output before returning it to the orchestrator. */
 export function validateRunnerOutput(value: unknown): string[] {
-  return schemaErrors(runnerValidator, value);
+  const errors = schemaErrors(runnerValidator, value);
+  if (errors.length > 0) return errors;
+  const output = value as {
+    status: "pass" | "fail" | "blocked";
+    commands: Array<{ status: "pass" | "fail" | "skipped" }>;
+  };
+  if (output.status === "pass" && output.commands.some((command) => command.status === "fail")) {
+    errors.push("A passing runner result must not report failed commands.");
+  }
+  return errors;
 }
 
 /** Validate reviewer output and ensure its verdict agrees with finding severity. */
@@ -117,6 +133,7 @@ export function validateReviewOutput(value: unknown): string[] {
 
   const output = value as {
     verdict: "pass" | "warn" | "fail";
+    gate: { status: "pass" | "fail" | "not-run" };
     findings: Array<{ severity: "blocker" | "major" | "minor" }>;
   };
   const hasSubstantiveFinding = output.findings.some(
@@ -130,6 +147,9 @@ export function validateReviewOutput(value: unknown): string[] {
   }
   if (output.verdict === "warn" && hasSubstantiveFinding) {
     errors.push("A warn verdict may contain only minor findings.");
+  }
+  if (output.gate.status === "fail" && output.verdict !== "fail") {
+    errors.push("A failed gate requires a fail verdict.");
   }
   return errors;
 }

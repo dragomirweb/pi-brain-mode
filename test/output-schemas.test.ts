@@ -30,6 +30,18 @@ describe("validateCoderOutput", () => {
       }),
     ).toContain("A completed coder run must report at least one changed file.");
   });
+
+  it("rejects completed runs that still report a failed check", () => {
+    expect(
+      validateCoderOutput({
+        status: "completed",
+        summary: "Done",
+        changedFiles: ["src/a.ts"],
+        checks: [{ command: "npm test", status: "fail", summary: "One failure" }],
+        notes: [],
+      }),
+    ).toContain("A completed coder run must not report failed checks.");
+  });
 });
 
 describe("validateRunnerOutput", () => {
@@ -43,6 +55,17 @@ describe("validateRunnerOutput", () => {
         extra: true,
       }),
     ).not.toEqual([]);
+  });
+
+  it("rejects a passing result that reports a failed command", () => {
+    expect(
+      validateRunnerOutput({
+        status: "pass",
+        summary: "Verified",
+        commands: [{ command: "npm test", status: "fail", output: "failed" }],
+        findings: [],
+      }),
+    ).toContain("A passing runner result must not report failed commands.");
   });
 });
 
@@ -73,5 +96,15 @@ describe("validateReviewOutput", () => {
         findings: [{ ...finding, severity: "minor" }],
       }),
     ).toContain("A pass verdict must not include findings.");
+  });
+
+  it("rejects pass or warn when the gate failed", () => {
+    expect(
+      validateReviewOutput({
+        verdict: "warn",
+        gate: { status: "fail", summary: "Typecheck failed" },
+        findings: [{ ...finding, severity: "minor" }],
+      }),
+    ).toContain("A failed gate requires a fail verdict.");
   });
 });

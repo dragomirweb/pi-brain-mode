@@ -75,6 +75,12 @@ function writeStatus(dir: string, status: Record<string, unknown>): void {
   );
 }
 
+function writeSession(dir: string, entries: unknown[]): string {
+  const path = join(dir, "child-session.jsonl");
+  writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  return path;
+}
+
 const validCoderOutput = {
   status: "completed",
   summary: "Implemented the change",
@@ -329,6 +335,115 @@ describe("runViaRpc", () => {
 
     expect(outcome?.kind).toBe("success");
     expect(outcome?.result.details?.structuredOutput).toMatchObject({ status: "blocked" });
+  });
+
+  it("recovers structured output submitted after a handled tool error", async () => {
+    const sessionFile = writeSession(dir, [
+      {
+        type: "message",
+        message: { role: "toolResult", toolName: "bash", isError: true, content: [] },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              name: "structured_output",
+              arguments: { value: validCoderOutput },
+            },
+          ],
+        },
+      },
+    ]);
+    writeStatus(dir, {
+      state: "failed",
+      error: "Step failed: brain-coder",
+      sessionFile,
+      totalTokens: { input: 10, output: 20, total: 30 },
+      steps: [{ status: "failed", error: "bash failed (exit 2): initial typecheck error" }],
+    });
+    const { pi, ctx } = makeHarness((request, bus) => {
+      if (request.method === "ping") reply(bus, request, { version: 1 });
+      if (request.method === "spawn") {
+        reply(bus, request, { details: { runId: "run-1", asyncDir: dir } });
+      }
+      if (request.method === "status") reply(bus, request, {});
+    });
+
+    const outcome = await runViaRpc(
+      pi,
+      ctx,
+      "brain-coder",
+      "Implement",
+      undefined,
+      undefined,
+      undefined,
+      CODER_OUTPUT_SCHEMA,
+      validateCoderOutput,
+      false,
+    );
+
+    expect(outcome?.kind).toBe("success");
+    if (outcome?.kind !== "success") throw new Error("expected success");
+    expect(outcome.result.details.structuredOutput).toEqual(validCoderOutput);
+    expect((outcome.result.content[0] as { text: string }).text).toContain(
+      "Recovered the valid final structured result",
+    );
+  });
+
+  it("does not recover structured output submitted before a later tool error", async () => {
+    const sessionFile = writeSession(dir, [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              name: "structured_output",
+              arguments: { value: validCoderOutput },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: { role: "toolResult", toolName: "bash", isError: true, content: [] },
+      },
+    ]);
+    writeStatus(dir, {
+      state: "failed",
+      error: "Step failed: brain-coder",
+      sessionFile,
+      steps: [{ status: "failed", error: "bash failed (exit 2): final typecheck error" }],
+    });
+    const { pi, ctx } = makeHarness((request, bus) => {
+      if (request.method === "ping") reply(bus, request, { version: 1 });
+      if (request.method === "spawn") {
+        reply(bus, request, { details: { runId: "run-1", asyncDir: dir } });
+      }
+      if (request.method === "status") reply(bus, request, {});
+    });
+
+    const outcome = await runViaRpc(
+      pi,
+      ctx,
+      "brain-coder",
+      "Implement",
+      undefined,
+      undefined,
+      undefined,
+      CODER_OUTPUT_SCHEMA,
+      validateCoderOutput,
+      false,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "error",
+      errorText: "bash failed (exit 2): final typecheck error",
+    });
   });
 
   it("classifies an unknown packaged agent as an infrastructure fallback", async () => {

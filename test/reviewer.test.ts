@@ -169,6 +169,30 @@ describe("delegate_to_reviewer", () => {
     expect(call.args.at(call.args.indexOf("--model") + 1)).toBe("anthropic/claude-opus-4-8");
   });
 
+  it("uses a different fallback model when auto reviewer matches the worker", async () => {
+    const { tool, ctx } = makeRegisteredReviewer(true, true, "/tmp/project", "", {
+      provider: "openai-codex",
+      id: "gpt-5.5",
+    });
+
+    const resultPromise = tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: pass" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await expect(resultPromise).resolves.toBeDefined();
+    const call = spawnCalls[0];
+    expect(call.args.at(call.args.indexOf("--model") + 1)).toBe("claude-opus-4-8");
+  });
+
   it("falls back to the worker model when reviewerModel is empty and no orchestrator model", async () => {
     const { tool, ctx } = makeRegisteredReviewer(true, true, "/tmp/project", "");
 
@@ -276,6 +300,23 @@ describe("delegate_to_reviewer", () => {
     expect((result.content[0] as { text: string }).text).toContain("VERDICT: warn");
   });
 
+  it("journals a reviewer process failure before rejecting", async () => {
+    const { tool, state, ctx } = makeRegisteredReviewer(true, true);
+    const resultPromise = tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStderr("review process failed");
+    children[0].close(1);
+
+    await expect(resultPromise).rejects.toThrow(/review process failed/);
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "reviewer",
+      outcome: "failed",
+      reviewStatus: "error",
+      error: expect.stringContaining("review process failed"),
+    });
+  });
+
   it("defaults intent, reads, and gate context from the last delegation", async () => {
     const { tool, state, ctx } = makeRegisteredReviewer(true, true);
     recordDelegation(state, {
@@ -309,7 +350,14 @@ describe("delegate_to_reviewer", () => {
     children[0].close(0);
     await resultPromise;
 
-    expect(state.journal.at(-1)).toMatchObject({ kind: "reviewer", verdict: "pass" });
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "reviewer",
+      verdict: "pass",
+      outcome: "completed",
+      reviewStatus: "pass",
+      workerCost: 0,
+      model: baseConfig.reviewerModel,
+    });
   });
 
   it("does not reuse stale gate context for a no-gate delegation", async () => {

@@ -15,6 +15,12 @@ const vectors: Array<{ input: string; expected: "allow" | "block" }> = [
   { input: "git status", expected: "allow" },
   { input: "git log --oneline -20", expected: "allow" },
   { input: "git diff HEAD~1", expected: "allow" },
+  { input: "git merge-base HEAD origin/main", expected: "allow" },
+  {
+    input:
+      "git status --porcelain && git rev-parse HEAD origin/main && git merge-base HEAD origin/main && git log --left-right HEAD...origin/main",
+    expected: "allow",
+  },
   { input: "npm ls --depth=0", expected: "allow" },
   { input: "jq '.scripts' package.json", expected: "allow" },
   { input: "head -n 50 README.md", expected: "allow" },

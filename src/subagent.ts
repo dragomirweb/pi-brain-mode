@@ -20,6 +20,8 @@ export type WorkerDetails = {
   changedFiles?: string[];
   /** Schema-controlled result returned by pi-subagents RPC. */
   structuredOutput?: unknown;
+  /** Stable pi-subagents run identifier when RPC execution was used. */
+  runId?: string;
 };
 
 type JsonObject = Record<string, unknown>;

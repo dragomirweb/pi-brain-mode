@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import type {
   AgentToolResult,
@@ -23,10 +23,13 @@ import {
   runnerSystemPrompt,
   workerSystemPrompt,
 } from "./prompts.ts";
-import { runReview } from "./reviewer.ts";
+import { resolveReviewerModel, runReview } from "./reviewer.ts";
 import {
   type BrainState,
+  type CheckSummary,
   DELEGATE_TOOL,
+  type DelegationOutcome,
+  type ReviewStatus,
   type ReviewVerdict,
   recordDelegation,
   summarizeTask,
@@ -72,8 +75,11 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
         throw new Error("delegate_to_coder is only available in Brain Mode. Run /brain on first.");
       }
 
+      const startedAt = Date.now();
       const readOnly = params.readOnly === true;
-      const gateCommand = readOnly ? null : resolveGateCommand(state, pi, ctx.cwd);
+      const gateCommand = readOnly
+        ? null
+        : resolveGateCommand(state, pi, ctx.cwd, params.reads ?? []);
       const previousFailure = readOnly ? undefined : previousFailureSection(state);
       const gateInstructions = readOnly ? undefined : gateSection(gateCommand);
 
@@ -101,6 +107,14 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
         readOnly,
       );
       if (rpcOutcome?.kind === "aborted") {
+        recordDelegationResult(state, params, readOnly, rpcOutcome.result, {
+          gate: "none",
+          outcome: "aborted",
+          reviewStatus: "not-run",
+          model: state.config.workerModel,
+          startedAt,
+        });
+        persistSession(pi, state);
         return rpcOutcome.result;
       }
       if (rpcOutcome?.kind === "success") {
@@ -123,11 +137,12 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           ctx,
           params,
           readOnly,
-          gateCommand,
           rpcResult,
           workerBlocked,
           signal,
           onUpdate,
+          startedAt,
+          state.config.workerModel,
         );
       }
       if (rpcOutcome?.kind === "error" && !rpcOutcome.infra) {
@@ -140,17 +155,18 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           ctx,
           params,
           readOnly,
-          gateCommand,
           formatRpcFailure(rpcOutcome.result, rpcOutcome.errorText),
           true,
           signal,
           onUpdate,
+          startedAt,
+          state.config.workerModel,
         );
       }
       // null (RPC absent) or infra error (unknown agent / model unavailable):
       // the fallback spawner below is likely to succeed.
       if (signal?.aborted) {
-        return {
+        const result: AgentToolResult<WorkerDetails> = {
           content: [{ type: "text", text: "Delegation aborted." }],
           details: {
             usage: {
@@ -164,6 +180,15 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
             },
           },
         };
+        recordDelegationResult(state, params, readOnly, result, {
+          gate: "none",
+          outcome: "aborted",
+          reviewStatus: "not-run",
+          model: state.config.workerModel,
+          startedAt,
+        });
+        persistSession(pi, state);
+        return result;
       }
 
       const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
@@ -187,36 +212,58 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
             ctx,
             params,
             readOnly,
-            gateCommand,
             result,
             false,
             signal,
             onUpdate,
+            startedAt,
+            model,
           );
         } catch (err) {
           if (err instanceof WorkerTimeoutError) {
             trackUsage(state, err.partialResult.details?.usage);
             const result = formatTimeoutResult(err);
-            recordDelegation(state, {
-              kind: readOnly ? "run" : "coder",
-              task: summarizeTask(params.task),
-              changedFiles: result.details?.changedFiles ?? [],
+            recordDelegationResult(state, params, readOnly, result, {
               gate: "none",
-              verdict: null,
-              cost: result.details?.usage?.cost ?? 0,
-              at: new Date().toISOString(),
+              outcome: "timed-out",
+              reviewStatus: "not-run",
+              model,
+              startedAt,
+              error: `Worker timed out after ${err.timeoutMs}ms.`,
             });
             persistSession(pi, state);
             return result;
           }
           lastErr = toError(err);
-          if (!isModelUnavailable(lastErr)) throw lastErr;
+          if (!isModelUnavailable(lastErr)) {
+            const failure = emptyFailureResult(lastErr.message);
+            recordDelegationResult(state, params, readOnly, failure, {
+              gate: "none",
+              outcome: signal?.aborted ? "aborted" : "failed",
+              reviewStatus: "not-run",
+              model,
+              startedAt,
+              error: lastErr.message,
+            });
+            persistSession(pi, state);
+            throw lastErr;
+          }
         }
       }
 
-      throw new Error(
+      const failure = new Error(
         `delegate_to_coder failed for all models [${models.join(", ")}]: ${lastErr?.message ?? "unknown"}`,
       );
+      recordDelegationResult(state, params, readOnly, emptyFailureResult(failure.message), {
+        gate: "none",
+        outcome: "failed",
+        reviewStatus: "not-run",
+        model: models.at(-1) ?? state.config.workerModel,
+        startedAt,
+        error: failure.message,
+      });
+      persistSession(pi, state);
+      throw failure;
     },
   });
 }
@@ -231,13 +278,20 @@ async function finalizeDelegation(
   ctx: ExtensionContext,
   params: DelegateParamsT,
   readOnly: boolean,
-  gateCommand: string | null,
   result: AgentToolResult<WorkerDetails>,
   workerFailed: boolean,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<WorkerDetails> | undefined,
+  startedAt: number,
+  workerModel: string,
 ): Promise<AgentToolResult<WorkerDetails>> {
-  const gate = await runGate(ctx.cwd, gateCommand, signal);
+  const effectiveGateCommand = readOnly
+    ? null
+    : resolveGateCommand(state, pi, ctx.cwd, [
+        ...(params.reads ?? []),
+        ...(result.details?.changedFiles ?? []),
+      ]);
+  const gate = await runGate(ctx.cwd, effectiveGateCommand, signal);
   if (gate.ran) {
     state.lastGate = { ok: gate.ok, command: gate.command, output: tail(gate.output, 1500) };
     state.consecutiveGateFailures = gate.ok ? 0 : state.consecutiveGateFailures + 1;
@@ -245,11 +299,11 @@ async function finalizeDelegation(
 
   let final = withGate(result, gate);
 
-  if (!readOnly && !gateCommand && !signal?.aborted) {
-    final = appendText(
-      final,
-      "\n\n---\nQuality gate: none configured — auto-detect found no `check`/`test` script here. The diff is UNVERIFIED by a gate; verify via the review and your own reads, or set one with `/brain gate <cmd>`.",
-    );
+  if (!readOnly && !effectiveGateCommand && !signal?.aborted) {
+    const gateNotice = isGateExplicitlyDisabled(state, pi)
+      ? "Quality gate: disabled for this project. Worker-reported checks remain visible, but no independent extension gate ran."
+      : "Quality gate: none configured or discovered. The diff was not independently re-verified by the extension; use the worker checks, review, or set `/brain gate <cmd>`.";
+    final = appendText(final, `\n\n---\n${gateNotice}`);
   }
 
   if (gate.ran && !gate.ok && state.consecutiveGateFailures >= 2) {
@@ -260,6 +314,10 @@ async function finalizeDelegation(
   }
 
   let verdict: ReviewVerdict | null = null;
+  let reviewStatus: ReviewStatus = "not-run";
+  let reviewCost = 0;
+  let reviewError: string | undefined;
+  let reviewModel: string | undefined;
   const shouldAutoReview =
     !readOnly &&
     !workerFailed &&
@@ -270,6 +328,8 @@ async function finalizeDelegation(
     !signal?.aborted;
 
   if (shouldAutoReview) {
+    reviewStatus = "error";
+    reviewModel = resolveReviewerModel(state, ctx);
     try {
       const review = await runReview(
         pi,
@@ -288,55 +348,247 @@ async function finalizeDelegation(
         onUpdate,
       );
       verdict = review.verdict;
+      reviewCost = review.result.details?.usage?.cost ?? 0;
+      reviewStatus = verdict ?? "error";
+      if (!verdict) reviewError = "Independent review returned no valid verdict.";
       final = appendText(
         final,
         `\n\n---\n### Independent review (ran automatically)\n${textOf(review.result)}`,
       );
     } catch (error) {
+      reviewError = tail(toError(error).message, 1000);
       final = appendText(
         final,
-        `\n\n---\n⚠️ Independent review could not complete: ${tail(toError(error).message, 1000)}\nThe coder result and quality-gate outcome above were preserved, but the change still needs review. Retry \`delegate_to_reviewer\` or inspect the diff yourself before declaring completion.`,
+        `\n\n---\n⚠️ Independent review could not complete: ${reviewError}\nThe coder result and quality-gate outcome above were preserved, but the change still needs review. Retry \`delegate_to_reviewer\` or inspect the diff yourself before declaring completion.`,
       );
     }
+  } else if (
+    !readOnly &&
+    state.config.reviewerEnabled &&
+    state.config.autoReview &&
+    (params.review === false || workerFailed || (gate.ran && !gate.ok))
+  ) {
+    reviewStatus = "skipped";
   }
 
-  recordDelegation(state, {
-    kind: readOnly ? "run" : "coder",
-    task: summarizeTask(params.task),
-    changedFiles: result.details?.changedFiles ?? [],
+  recordDelegationResult(state, params, readOnly, result, {
     gate: gate.ran ? (gate.ok ? "pass" : "fail") : "none",
+    outcome: delegationOutcome(result, workerFailed, gate, signal),
     verdict,
-    cost: result.details?.usage?.cost ?? 0,
-    at: new Date().toISOString(),
+    reviewStatus,
+    reviewCost,
+    model: workerModel,
+    reviewModel,
+    startedAt,
+    error: reviewError ?? (workerFailed ? tail(textOf(result), 500) : undefined),
   });
   persistSession(pi, state);
 
   return final;
 }
 
-function resolveGateCommand(state: BrainState, pi: ExtensionAPI, cwd: string): string | null {
+interface DelegationRecordOptions {
+  gate: "pass" | "fail" | "none";
+  outcome: DelegationOutcome;
+  reviewStatus: ReviewStatus;
+  verdict?: ReviewVerdict | null;
+  reviewCost?: number;
+  model: string;
+  reviewModel?: string;
+  startedAt: number;
+  error?: string;
+}
+
+function recordDelegationResult(
+  state: BrainState,
+  params: DelegateParamsT,
+  readOnly: boolean,
+  result: AgentToolResult<WorkerDetails>,
+  options: DelegationRecordOptions,
+): void {
+  const workerCost = result.details?.usage?.cost ?? 0;
+  const reviewCost = options.reviewCost ?? 0;
+  const checks = structuredCheckSummary(result.details?.structuredOutput);
+  recordDelegation(state, {
+    kind: readOnly ? "run" : "coder",
+    task: summarizeTask(params.task),
+    changedFiles: result.details?.changedFiles ?? [],
+    gate: options.gate,
+    verdict: options.verdict ?? null,
+    cost: workerCost + reviewCost,
+    at: new Date().toISOString(),
+    outcome: options.outcome,
+    reviewStatus: options.reviewStatus,
+    ...(checks ? { checks } : {}),
+    workerCost,
+    reviewCost,
+    durationMs: Math.max(0, Date.now() - options.startedAt),
+    model: options.model,
+    ...(options.reviewModel ? { reviewModel: options.reviewModel } : {}),
+    ...(result.details?.runId ? { runId: result.details.runId } : {}),
+    ...(options.error ? { error: options.error } : {}),
+  });
+}
+
+function emptyFailureResult(message: string): AgentToolResult<WorkerDetails> {
+  return {
+    content: [{ type: "text", text: message }],
+    details: {
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    },
+  };
+}
+
+function delegationOutcome(
+  result: AgentToolResult<WorkerDetails>,
+  workerFailed: boolean,
+  gate: GateResult,
+  signal: AbortSignal | undefined,
+): DelegationOutcome {
+  if (signal?.aborted) return "aborted";
+  const structured = result.details?.structuredOutput;
+  if (typeof structured === "object" && structured !== null && "status" in structured) {
+    if (structured.status === "blocked") return "blocked";
+    if (structured.status === "fail") return "failed";
+  }
+  if (workerFailed || (gate.ran && !gate.ok)) return "failed";
+  return "completed";
+}
+
+function structuredCheckSummary(structured: unknown): CheckSummary | undefined {
+  if (typeof structured !== "object" || structured === null) return undefined;
+  const record = structured as Record<string, unknown>;
+  const entries = Array.isArray(record.checks)
+    ? record.checks
+    : Array.isArray(record.commands)
+      ? record.commands
+      : undefined;
+  if (!entries) return undefined;
+
+  const summary: CheckSummary = { pass: 0, fail: 0, skipped: 0 };
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null || !("status" in entry)) continue;
+    const status = (entry as Record<string, unknown>).status;
+    if (status === "pass" || status === "fail" || status === "skipped") summary[status] += 1;
+  }
+  return summary;
+}
+
+type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+const GATE_SCRIPT_PRIORITY = ["check", "verify", "test:ci", "typecheck", "tsc", "test"];
+
+function resolveGateCommand(
+  state: BrainState,
+  pi: ExtensionAPI,
+  cwd: string,
+  contextPaths: string[],
+): string | null {
   const configured = state.config.gateCommand?.trim() ?? "";
   if (configured) {
-    return configured.toLowerCase() === "off" ? null : configured;
+    const lowered = configured.toLowerCase();
+    if (lowered === "off" || lowered === "none") return null;
+    if (lowered !== "auto") return configured;
   }
   const flag = typeof pi.getFlag === "function" ? pi.getFlag("brain-gate-command") : undefined;
   if (typeof flag === "string") {
     const normalized = flag.trim();
     const lowered = normalized.toLowerCase();
-    if (normalized === "" || lowered === "off" || lowered === "none") return null;
-    return normalized;
+    if (lowered === "off" || lowered === "none") return null;
+    if (normalized !== "" && lowered !== "auto") return normalized;
   }
+  const rootPackage = readPackageJson(cwd);
+  const manager = detectPackageManager(cwd, rootPackage);
+  const rootGate = rootPackage ? gateForPackage(cwd, cwd, manager, rootPackage) : null;
+  if (rootGate) return rootGate;
+
+  const nestedGates = packageDirsForPaths(cwd, contextPaths)
+    .map((packageDir) => {
+      const pkg = readPackageJson(packageDir);
+      return pkg ? gateForPackage(cwd, packageDir, manager, pkg) : null;
+    })
+    .filter((command): command is string => Boolean(command));
+  const unique = [...new Set(nestedGates)];
+  return unique.length > 0 ? unique.join(" && ") : null;
+}
+
+function isGateExplicitlyDisabled(state: BrainState, pi: ExtensionAPI): boolean {
+  const configured = state.config.gateCommand?.trim().toLowerCase();
+  if (configured === "off" || configured === "none") return true;
+  const flag = typeof pi.getFlag === "function" ? pi.getFlag("brain-gate-command") : undefined;
+  return typeof flag === "string" && ["off", "none"].includes(flag.trim().toLowerCase());
+}
+
+interface PackageJson {
+  packageManager?: unknown;
+  scripts?: Record<string, unknown>;
+}
+
+function readPackageJson(directory: string): PackageJson | null {
   try {
-    const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as {
-      scripts?: Record<string, unknown>;
-    };
-    const scripts = pkg.scripts ?? {};
-    if (typeof scripts.check === "string") return "npm run check";
-    if (typeof scripts.test === "string") return "npm test";
+    return JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as PackageJson;
   } catch {
-    // No package.json (or unreadable) — no gate to run.
+    return null;
   }
-  return null;
+}
+
+function detectPackageManager(cwd: string, pkg: PackageJson | null): PackageManager {
+  const declared =
+    typeof pkg?.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
+  if (declared === "pnpm" || declared === "yarn" || declared === "bun" || declared === "npm") {
+    return declared;
+  }
+  if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
+  if (existsSync(join(cwd, "bun.lock")) || existsSync(join(cwd, "bun.lockb"))) return "bun";
+  return "npm";
+}
+
+function gateForPackage(
+  cwd: string,
+  packageDir: string,
+  manager: PackageManager,
+  pkg: PackageJson,
+): string | null {
+  const scripts = pkg.scripts ?? {};
+  const script = GATE_SCRIPT_PRIORITY.find((name) => typeof scripts[name] === "string");
+  if (!script) return null;
+  const run = manager === "npm" && script === "test" ? "npm test" : `${manager} run ${script}`;
+  if (packageDir === cwd) return run;
+  const directory = relative(cwd, packageDir);
+  return `(cd ${shellQuote(directory)} && ${run})`;
+}
+
+function packageDirsForPaths(cwd: string, paths: string[]): string[] {
+  const directories = new Set<string>();
+  for (const contextPath of paths) {
+    const absolute = resolve(cwd, contextPath);
+    const fromRoot = relative(cwd, absolute);
+    if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) continue;
+    let current = existsSync(join(absolute, "package.json")) ? absolute : dirname(absolute);
+    while (current !== cwd && relative(cwd, current) !== "..") {
+      if (existsSync(join(current, "package.json"))) {
+        directories.add(current);
+        break;
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return [...directories].sort();
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 async function runGate(

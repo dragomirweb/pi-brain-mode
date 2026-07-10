@@ -41,7 +41,7 @@ export function setSettingsPathForTests(path: string | undefined): void {
 /** Persist only the session journal. Brain on/off and configuration live elsewhere. */
 export function persistSession(pi: ExtensionAPI, state: BrainState): void {
   const data: BrainPersisted = {
-    v: 3,
+    v: 4,
     journal: state.journal,
   };
   pi.appendEntry(PERSIST_KEY, data);
@@ -55,7 +55,7 @@ export function loadLatest(sessionManager: ReadonlySessionManager): LoadedSessio
     if (entry?.customType !== PERSIST_KEY) continue;
 
     const version = entry.data?.v;
-    if (version === 3) {
+    if (version === 3 || version === 4) {
       return { journal: validJournal(entry.data?.journal) };
     }
     if (version === 1 || version === 2) {
