@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "../src/config.ts";
 import piBrain from "../src/index.ts";
+import { PERSIST_KEY } from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 describe("piBrain", () => {
@@ -64,6 +66,28 @@ describe("piBrain", () => {
     const applied = mock.getActiveTools();
     expect(applied).toContain("edit");
     expect(applied).toContain("write");
+    expect(applied).not.toContain("delegate_to_coder");
+  });
+
+  it("keeps --brain-off disabled when persistence says enabled", async () => {
+    const mock = makeMockPi({
+      initialTools: ["read", "grep", "find", "ls", "delegate_to_coder"],
+      flags: { "brain-off": true },
+    });
+    mock.pi.appendEntry(PERSIST_KEY, {
+      v: 2,
+      enabled: true,
+      config: DEFAULT_CONFIG,
+      journal: [],
+    });
+
+    piBrain(mock.pi);
+    await mock.dispatch("session_start", { reason: "start" });
+
+    const applied = mock.getActiveTools();
+    expect(applied).toContain("edit");
+    expect(applied).toContain("write");
+    expect(applied).toContain("bash");
     expect(applied).not.toContain("delegate_to_coder");
   });
 

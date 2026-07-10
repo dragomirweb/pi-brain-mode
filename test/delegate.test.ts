@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerDelegateTool } from "../src/delegate.ts";
 import { createBrainState } from "../src/state.ts";
-import { resetBridgeDetection, setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
+import { resetRpcDetection, setRpcDetectTimeoutMs } from "../src/subagent-rpc.ts";
 import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -56,6 +59,7 @@ type SpawnCall = {
 
 const children: FakeChild[] = [];
 const spawnCalls: SpawnCall[] = [];
+const rpcDirs: string[] = [];
 
 beforeEach(() => {
   children.length = 0;
@@ -74,14 +78,15 @@ beforeEach(() => {
 });
 
 beforeEach(() => {
-  resetBridgeDetection();
-  setBridgeDetectTimeoutMs(0);
+  resetRpcDetection();
+  setRpcDetectTimeoutMs(0);
 });
 
 afterEach(() => {
+  for (const dir of rpcDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   setSpawnTimeoutMs(600_000);
-  setBridgeDetectTimeoutMs(5_000);
-  resetBridgeDetection();
+  setRpcDetectTimeoutMs(1_000);
+  resetRpcDetection();
   vi.clearAllMocks();
 });
 
@@ -343,7 +348,7 @@ describe("delegate_to_coder", () => {
     await expect(resultPromise).rejects.toThrow(/no output/i);
   });
 
-  it("aborts via bridge before spawn and returns abort text", async () => {
+  it("aborts before RPC detection or fallback spawn", async () => {
     const { tool, ctx } = makeRegisteredTool(true);
     const abortController = new AbortController();
 
@@ -359,7 +364,7 @@ describe("delegate_to_coder", () => {
     const result = await resultPromise;
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("aborted");
-    // Bridge handled the abort — no spawn occurred.
+    // The already-aborted request emitted no RPC or fallback work.
     expect(children).toHaveLength(0);
   });
 
@@ -458,28 +463,32 @@ describe("delegate_to_coder", () => {
     expect(positionalTask).toContain("- docs/spec.md");
   });
 
-  it("uses the bridge result, runs the gate, and tracks session usage", async () => {
+  it("uses the schema-controlled RPC result, runs the gate, and tracks usage", async () => {
     const { tool, pi, state, ctx } = makeRegisteredTool(true, "/tmp/project", {
       "brain-gate-command": "npm run check",
     });
-    respondViaBridge(pi, {
-      content: [{ type: "text", text: "Worker done: changed src/a.ts" }],
-      details: {
-        totalChildUsage: {
-          input: 100,
-          output: 2000,
-          cacheRead: 0,
-          cacheWrite: 0,
-          cost: 0.05,
-          turns: 1,
+    respondViaRpc(pi, {
+      state: "complete",
+      totalTokens: { input: 100, output: 2000, total: 2100 },
+      totalCost: { costUsd: 0.05 },
+      steps: [
+        {
+          status: "complete",
+          turnCount: 1,
+          structuredOutput: {
+            status: "completed",
+            summary: "Worker done: changed src/a.ts",
+            changedFiles: ["src/a.ts"],
+            checks: [],
+            notes: [],
+          },
         },
-        results: [{ changedFiles: ["src/a.ts"] }],
-      },
+      ],
     });
 
     const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
 
-    // Only the gate process spawns — the worker ran via the bridge.
+    // Only the gate process spawns — the worker ran via RPC.
     await vi.waitFor(() => expect(children).toHaveLength(1));
     children[0].close(0);
 
@@ -494,14 +503,43 @@ describe("delegate_to_coder", () => {
     expect(state.sessionUsage.cost).toBeCloseTo(0.05);
   });
 
-  it("falls back to the spawner when the bridge reports an infra error", async () => {
-    const { tool, pi, ctx } = makeRegisteredTool(true);
-    respondViaBridge(
-      pi,
-      { content: [{ type: "text", text: "Unknown agent: brain-coder" }], details: {} },
+  it("does not auto-review an RPC worker that reports blocked", async () => {
+    const { tool, pi, state, ctx } = makeRegisteredTool(
       true,
-      "Unknown agent: brain-coder",
+      "/tmp/project",
+      { "brain-gate-command": "off" },
+      { reviewerEnabled: true, autoReview: true },
     );
+    respondViaRpc(pi, {
+      state: "complete",
+      steps: [
+        {
+          status: "complete",
+          structuredOutput: {
+            status: "blocked",
+            summary: "Missing required API contract",
+            changedFiles: [],
+            checks: [],
+            notes: ["Need the API contract"],
+          },
+        },
+      ],
+    });
+
+    const result = await tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("worker reported BLOCKED");
+    expect(text).not.toContain("Independent review");
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(state.journal.at(-1)).toMatchObject({ kind: "coder", verdict: null });
+  });
+
+  it("falls back to the spawner when RPC reports an infrastructure error", async () => {
+    const { tool, pi, ctx } = makeRegisteredTool(true);
+    respondViaRpc(pi, undefined, {
+      code: "execution_failed",
+      message: "Unknown agent: brain-coder",
+    });
 
     const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
 
@@ -521,16 +559,15 @@ describe("delegate_to_coder", () => {
     expect(modelArg(spawnCalls[0].args)).toBe(baseConfig.workerModel);
   });
 
-  it("surfaces a bridge task failure with a warning and still runs the gate", async () => {
+  it("surfaces an RPC task failure with a warning and still runs the gate", async () => {
     const { tool, pi, ctx } = makeRegisteredTool(true, "/tmp/project", {
       "brain-gate-command": "npm run check",
     });
-    respondViaBridge(
-      pi,
-      { content: [{ type: "text", text: "Worker crashed mid-task" }], details: {} },
-      true,
-      "Worker crashed mid-task",
-    );
+    respondViaRpc(pi, {
+      state: "failed",
+      error: "Worker crashed mid-task",
+      steps: [{ status: "failed", error: "Worker crashed mid-task" }],
+    });
 
     const resultPromise = tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
 
@@ -861,40 +898,6 @@ describe("delegate_to_coder", () => {
     expect((result.content[0] as { text: string }).text).toContain("Quality gate: none configured");
   });
 
-  it("returns guidance without gate or review when the worker detaches via intercom", async () => {
-    const { tool, pi, state, ctx } = makeRegisteredTool(
-      true,
-      "/tmp/project",
-      { "brain-gate-command": "npm run check" },
-      { reviewerEnabled: true, autoReview: true },
-    );
-    respondViaBridge(pi, {
-      content: [
-        {
-          type: "text",
-          text: "Detached for intercom coordination: brain-coder. Reply to the supervisor request first.",
-        },
-      ],
-      details: {},
-    });
-
-    const result = await tool.execute("call-1", { task: "do it" }, undefined, undefined, ctx);
-    const text = (result.content[0] as { text: string }).text;
-    expect(text).toContain("DETACHED");
-    expect(text).toContain("intercom");
-    expect(text).toContain("NOT done");
-    expect(text).not.toContain("Quality gate");
-    expect(text).not.toContain("Independent review");
-    // No gate process and no reviewer were spawned.
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(state.journal.at(-1)).toMatchObject({
-      kind: "coder",
-      gate: "none",
-      verdict: null,
-      task: expect.stringContaining("detached"),
-    });
-  });
-
   it("skips the quality gate when the delegation is aborted", async () => {
     const { tool, ctx } = makeRegisteredTool(true, "/tmp/project", {
       "brain-gate-command": "npm run check",
@@ -935,17 +938,44 @@ function makeRegisteredTool(
   return { tool, pi, state, ctx: { cwd } as ExtensionContext };
 }
 
-/** Make the mock event bus answer the next bridge request like pi-subagents would. */
-function respondViaBridge(
+/** Make the mock event bus answer stable pi-subagents RPC requests. */
+function respondViaRpc(
   pi: ReturnType<typeof makeMockPi>["pi"],
-  result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> },
-  isError = false,
-  errorText?: string,
+  status?: Record<string, unknown>,
+  spawnError?: { code: string; message: string },
 ) {
-  pi.events.on("subagent:slash:request", (data: unknown) => {
-    const { requestId } = data as { requestId: string };
-    pi.events.emit("subagent:slash:started", { requestId });
-    pi.events.emit("subagent:slash:response", { requestId, result, isError, errorText });
+  const dir = mkdtempSync(join(tmpdir(), "brain-rpc-delegate-test-"));
+  rpcDirs.push(dir);
+  if (status) {
+    writeFileSync(
+      join(dir, "status.json"),
+      JSON.stringify({ lifecycleArtifactVersion: 1, runId: "run-1", ...status }),
+    );
+  }
+  pi.events.on("subagents:rpc:v1:request", (data: unknown) => {
+    const request = data as { requestId: string; method: string };
+    const event = `subagents:rpc:v1:reply:${request.requestId}`;
+    if (request.method === "spawn" && spawnError) {
+      pi.events.emit(event, {
+        version: 1,
+        requestId: request.requestId,
+        success: false,
+        error: spawnError,
+      });
+      return;
+    }
+    const responseData =
+      request.method === "ping"
+        ? { version: 1 }
+        : request.method === "spawn"
+          ? { details: { runId: "run-1", asyncDir: dir } }
+          : {};
+    pi.events.emit(event, {
+      version: 1,
+      requestId: request.requestId,
+      success: true,
+      data: responseData,
+    });
   });
 }
 

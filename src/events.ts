@@ -11,7 +11,7 @@ import { resolveConfig } from "./config.ts";
 import { loadLatest } from "./persistence.ts";
 import * as prompts from "./prompts.ts";
 import { type BrainState, applyBrainTools } from "./state.ts";
-import { resetBridgeDetection } from "./subagent-bridge.ts";
+import { resetRpcDetection } from "./subagent-rpc.ts";
 
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
@@ -22,17 +22,17 @@ export function registerBrainEvents(pi: ExtensionAPI, state: BrainState): void {
   });
 
   pi.on("session_start", (_event: SessionStartEvent, ctx) => {
-    // A /reload may have installed pi-subagents — probe the bridge again.
-    resetBridgeDetection();
+    // A /reload may have installed pi-subagents — probe stable RPC again.
+    resetRpcDetection();
+    const disabledByFlag = pi.getFlag("brain-off") === true;
     const saved = loadLatest(ctx.sessionManager);
     if (saved) {
       state.enabled = saved.enabled;
       state.config = resolveConfig(pi, saved.config);
       state.journal = saved.journal;
     }
-    if (state.enabled) {
-      pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
-    }
+    if (disabledByFlag) state.enabled = false;
+    pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, state.enabled));
   });
 
   pi.on("tool_call", (event: ToolCallEvent) => {

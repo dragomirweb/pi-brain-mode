@@ -24,6 +24,7 @@ Alternatives:
 - Node >= 22.19.0
 - The `pi` binary on `PATH` because delegation spawns a child `pi` process
 - A worker model you can authenticate: default `openai-codex/gpt-5.5`, fallback `claude-opus-4-8`
+- Optional: [pi-subagents](https://github.com/nicobailon/pi-subagents) >= 0.34 for stable RPC execution, progress, usage, and schema-controlled results
 
 No third-party fork is needed.
 
@@ -55,15 +56,22 @@ Use the `/brain` command:
 
 `/brain reviewer on|off` toggles the independent reviewer (default: **on**), and `/brain reviewer <model-id>` sets the reviewer model (default: the orchestrator's model, deliberately a different model than the worker). The same controls are available at launch via `--brain-reviewer` / `--brain-no-reviewer` and `--brain-reviewer-model <model>`.
 
-When the reviewer is enabled, the orchestrator gains a `delegate_to_reviewer` tool. The reviewer inspects the coder's diff, verifies the quality gate (it receives the gate result the extension already ran and spot-checks rather than blindly re-running), runs `fallow audit` if installed, judges the change against the stated `intent`/`acceptanceCriteria`, applies only trivial mechanical fixes itself, and returns a structured verdict (pass/warn/fail) plus findings. `intent` and `reads` default to the most recent delegation, so a bare `delegate_to_reviewer` call reviews the last change.
+When the reviewer is enabled, the orchestrator gains a `delegate_to_reviewer` tool. The reviewer inspects the coder's diff, verifies the quality gate (it receives the gate result the extension already ran and spot-checks rather than blindly re-running), runs `fallow audit` if installed, judges the change against the stated `intent`/`acceptanceCriteria`, and returns a structured verdict (pass/warn/fail) plus findings. The reviewer is read-only: every fix goes back through the coder and quality gate. `intent` and `reads` default to the most recent delegation, so a bare `delegate_to_reviewer` call reviews the last change.
 
 **Auto-review** (default: **on**, toggle with `/brain reviewer always|manual` or `--brain-no-auto-review`): after each successful delegation that passes the gate, the reviewer runs automatically and its verdict is appended to the delegation result — coder → gate → review in a single tool call. The verdict is parsed and recorded in the journal; a `fail` verdict comes with an explicit instruction to re-delegate a fix. Auto-review is skipped when the gate fails (a fix delegation is coming anyway), for read-only runs, and when the orchestrator passes `review: false` on a trivial mechanical delegation.
 
 The reviewer is tuned to be cheap on small diffs: it receives the extension's gate result plus the worker's own report of which checks it ran, and is instructed to spot-check with at most one targeted command scoped to the changed files rather than re-running repo-wide compiles the worker already ran. In a monorepo, that turns a ~4-minute review into under a minute.
 
-When Brain Mode is on, `edit` and `write` are removed from the main agent. `bash` stays available by default, but it is gated to read/search-style commands; mutating or opaque shell commands are blocked and should be delegated. The main implementation path is `delegate_to_coder`, where the brain sends a scoped task to a coder worker. For empirical verification (run the tests, benchmark something), the brain calls `delegate_to_coder` with `readOnly: true` — the worker then gets no edit/write tools at all, so the run cannot mutate anything.
+When Brain Mode is on, `edit` and `write` are removed from the main agent. `bash` stays available by default, but it is gated to read/search-style commands; mutating or opaque shell commands are blocked and should be delegated. The main implementation path is `delegate_to_coder`, where the brain sends a scoped task to a coder worker. For empirical verification (run the tests, benchmark something), the brain calls `delegate_to_coder` with `readOnly: true` — the worker gets no edit/write tools and is explicitly instructed not to mutate files; shell remains available for the requested checks.
 
-Recommended workflow: plan the change, batch related implementation work into a focused delegation, then verify the result from the brain session.
+Recommended workflow:
+
+1. Create or approve the plan. When Big Brain Plan is in use, the orchestrator reads `.pi/plans/current.md` and preserves its slice order and dependencies.
+2. Analyze the requested outcome, acceptance criteria, constraints, and risk.
+3. Inspect repository instructions, manifests, entry points, relevant call sites, tests, and nearby patterns; delegation briefs should cite this inspected evidence.
+4. Choose the execution shape: one focused worker for one logical unit, or multiple non-overlapping subagent tasks split by dependency-safe file group, phase, or layer.
+5. Execute, run the quality gate, inspect the changed files, and use a read-only runner for any empirical check that is still missing.
+6. Independently review the diff, re-delegate substantive fixes, and finish only when the gate and acceptance criteria are satisfied.
 
 ## Delegation journal
 
@@ -94,13 +102,11 @@ Brain Mode layers several controls:
 2. A bash-gate backstop blocks mutating or opaque shell commands when `bash` is enabled.
 3. The prompt redirects implementation work to `delegate_to_coder`.
 
-**Worker isolation:** delegated children never load Pi extensions. The packaged agents declare an empty `extensions` sandbox (pi-subagents spawns them with `--no-extensions`), the fallback spawner passes `--no-extensions` itself, and pi-brain refuses to activate inside any worker (`PI_BRAIN_WORKER`) or pi-subagents child (`PI_SUBAGENT_CHILD`). Without this, Brain Mode would strip `edit`/`write` from the very coder it delegated to, and pi-intercom would reroute worker output away from the tool result. If pi-intercom still detaches a run mid-flight (e.g. with customized agents), the delegation reports **DETACHED** with recovery guidance — it is never mistaken for a completed task, and no gate or auto-review runs on it.
+**Worker isolation:** delegated children never load project extensions. The packaged agents declare an empty `extensions` sandbox, the fallback spawner passes `--no-extensions`, and pi-brain refuses to activate inside its own fallback workers (`PI_BRAIN_WORKER`) or pi-subagents children (`PI_SUBAGENT_CHILD`). This keeps Brain Mode from stripping `edit`/`write` from the coder it just delegated to.
 
-**Intercom receipt recovery:** when pi-intercom is active in the *parent* session, pi-subagents replaces a completed run's tool result with a delivery receipt ("Full grouped output was sent over intercom") and sends the real output as a 📨 message — which the child sandbox cannot prevent. The bridge detects the receipt and transparently recovers the worker's real output from the run's artifact file on disk, so summaries, review verdicts, and the journal keep working; the duplicate 📨 message can be ignored. Changed files are additionally mined from pi-subagents' per-run tool-call summaries, which survive the receipt.
+When [pi-subagents](https://github.com/nicobailon/pi-subagents) >= 0.34 is installed, `delegate_to_coder` and `delegate_to_reviewer` use its documented `subagents:rpc:v1` API. Each call starts a one-step asynchronous chain with the packaged `brain-coder`, `brain-runner`, or `brain-reviewer` definition and a strict role-specific output schema. The extension polls the versioned lifecycle artifact for progress, usage, changed files, errors, and controlled structured output; malformed results are rejected before they can be treated as completed work. Cancellation uses RPC `stop`. Availability failures fall through to the local process spawner, while task failures remain visible and still run the quality gate because files may have changed.
 
-When [pi-subagents](https://github.com/nicobailon/pi-subagents) (>= 0.30) is installed, `delegate_to_coder` and `delegate_to_reviewer` run through its in-process event bridge using the packaged `brain-coder` / `brain-runner` / `brain-reviewer` agent definitions (discovered via the `pi-subagents` key in `package.json`). This gives you pi-subagents' progress widgets, artifact storage, and native model fallback. Usage/cost is read from the `totalChildUsage` rollup (pi-subagents >= 0.32) and aggregated into a session-spend line in `/brain status`. Runs carry a native `timeoutMs` deadline (enforced by pi-subagents >= 0.31), and an acknowledged run that never responds is cancelled client-side after 15 minutes instead of hanging the session. Bridge failures are classified: availability errors (unknown agent, model unavailable) fall through to the process spawner below, while genuine task failures are surfaced with an explicit warning — and the quality gate still runs, since the worker may have left files half-changed.
-
-If pi-subagents is not installed or does not answer within 5 s (detected once per session, then skipped until the next `/reload`), `delegate_to_coder` spawns a child `pi` subprocess with an inline worker prompt, a restricted tool allowlist (`read,edit,write,bash`, or `read,grep,find,ls,bash` for `readOnly` runs), `--no-session`, and JSON/NDJSON streaming. The parent reads worker progress from NDJSON events and returns a compact final summary.
+If pi-subagents is unavailable (detected once per session, then skipped until `/reload`), `delegate_to_coder` spawns a child `pi` subprocess with an inline worker prompt, a restricted tool allowlist (`read,edit,write,bash`, or `read,grep,find,ls,bash` for `readOnly` runs), `--no-session`, and JSON/NDJSON streaming. The parent reads worker progress from NDJSON events and returns a compact final summary.
 
 Brain Mode persists its on/off state, configuration, and delegation journal in the Pi session and re-applies the active toolset on session start or reload. It also re-anchors the system prompt (including the recent-delegations journal) each turn so the orchestrator-worker split survives prompt rebuilds and compaction.
 
@@ -114,4 +120,4 @@ By default Brain Mode KEEPS `bash` (the brain needs it to search) and gates it w
 
 ## Versioning / compatibility
 
-The Pi peer dependency is intentionally `"*"`; Pi moves quickly, so compatibility is tracked by tested host version instead of a strict peer range. The CHANGELOG records the tested Pi version for each release. When reporting breakage, include your `pi --version`.
+The package requires Pi >= 0.80.2 and TypeBox >= 1.3.0. pi-subagents >= 0.34 is an optional peer: when it is absent, the local child-process fallback remains available. The CHANGELOG records tested Pi versions. When reporting breakage, include your `pi --version`.

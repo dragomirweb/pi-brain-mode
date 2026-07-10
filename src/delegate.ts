@@ -10,6 +10,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 
+import {
+  CODER_OUTPUT_SCHEMA,
+  RUNNER_OUTPUT_SCHEMA,
+  validateCoderOutput,
+  validateRunnerOutput,
+} from "./output-schemas.ts";
 import { persist } from "./persistence.ts";
 import {
   DelegateParams,
@@ -26,7 +32,7 @@ import {
   summarizeTask,
   trackUsage,
 } from "./state.ts";
-import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
+import { buildRpcTask, runViaRpc } from "./subagent-rpc.ts";
 import {
   type WorkerDetails,
   WorkerTimeoutError,
@@ -71,8 +77,8 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
       const previousFailure = readOnly ? undefined : previousFailureSection(state);
       const gateInstructions = readOnly ? undefined : gateSection(gateCommand);
 
-      // Try pi-subagents bridge first — returns null if not installed.
-      const bridgeTask = buildBridgeTask(
+      // Try pi-subagents' documented RPC first — returns null if unavailable.
+      const rpcTask = buildRpcTask(
         `Task: ${params.task}`,
         combineContext(
           params.plan ? `## Plan\n${params.plan}` : undefined,
@@ -80,43 +86,37 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           gateInstructions,
         ),
         params.reads ?? [],
+        readOnly ? "verification" : "implementation",
       );
-      const bridgeOutcome = await runViaBridge(
+      const rpcOutcome = await runViaRpc(
         pi,
         ctx,
         readOnly ? "brain-runner" : "brain-coder",
-        bridgeTask,
+        rpcTask,
         state.config.workerModel,
         signal,
         onUpdate,
+        readOnly ? RUNNER_OUTPUT_SCHEMA : CODER_OUTPUT_SCHEMA,
+        readOnly ? validateRunnerOutput : validateCoderOutput,
+        readOnly,
       );
-      if (bridgeOutcome?.kind === "aborted") {
-        return bridgeOutcome.result;
+      if (rpcOutcome?.kind === "aborted") {
+        return rpcOutcome.result;
       }
-      if (bridgeOutcome?.kind === "detached") {
-        // The worker paused to ask a question via intercom — nothing is done
-        // yet, so no gate and no review. Tell the orchestrator how to proceed.
-        trackUsage(state, bridgeOutcome.result.details.usage);
-        recordDelegation(state, {
-          kind: readOnly ? "run" : "coder",
-          task: `${summarizeTask(params.task)} (detached — awaiting intercom)`,
-          changedFiles: [],
-          gate: "none",
-          verdict: null,
-          cost: bridgeOutcome.result.details.usage?.cost ?? 0,
-          at: new Date().toISOString(),
-        });
-        persist(pi, state);
-        return appendText(
-          bridgeOutcome.result,
-          `\n\n⚠️ The worker DETACHED to ask you a question — the task is NOT done and no gate/review ran.
-1. Check \`intercom({"action":"pending"})\` and answer the worker's question.
-2. Wait for the 📨 subagent-result message with its final output.
-3. Then verify (\`git status\`, read the changed files) and re-delegate any remaining work.`,
-        );
-      }
-      if (bridgeOutcome?.kind === "success") {
-        trackUsage(state, bridgeOutcome.result.details.usage);
+      if (rpcOutcome?.kind === "success") {
+        trackUsage(state, rpcOutcome.result.details.usage);
+        const structured = rpcOutcome.result.details.structuredOutput;
+        const workerBlocked =
+          typeof structured === "object" &&
+          structured !== null &&
+          "status" in structured &&
+          structured.status === "blocked";
+        const rpcResult = workerBlocked
+          ? appendText(
+              rpcOutcome.result,
+              "\n\n⚠️ The worker reported BLOCKED — this delegation is not complete. Resolve the notes above before continuing.",
+            )
+          : rpcOutcome.result;
         return finalizeDelegation(
           pi,
           state,
@@ -124,16 +124,16 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           params,
           readOnly,
           gateCommand,
-          bridgeOutcome.result,
-          false,
+          rpcResult,
+          workerBlocked,
           signal,
           onUpdate,
         );
       }
-      if (bridgeOutcome?.kind === "error" && !bridgeOutcome.infra) {
+      if (rpcOutcome?.kind === "error" && !rpcOutcome.infra) {
         // Genuine task failure — the worker may have left files half-changed,
         // so still run the gate and tell the orchestrator how to recover.
-        trackUsage(state, bridgeOutcome.result.details.usage);
+        trackUsage(state, rpcOutcome.result.details.usage);
         return finalizeDelegation(
           pi,
           state,
@@ -141,14 +141,30 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
           params,
           readOnly,
           gateCommand,
-          formatBridgeFailure(bridgeOutcome.result, bridgeOutcome.errorText),
+          formatRpcFailure(rpcOutcome.result, rpcOutcome.errorText),
           true,
           signal,
           onUpdate,
         );
       }
-      // null (bridge absent) or infra error (unknown agent / model unavailable):
+      // null (RPC absent) or infra error (unknown agent / model unavailable):
       // the fallback spawner below is likely to succeed.
+      if (signal?.aborted) {
+        return {
+          content: [{ type: "text", text: "Delegation aborted." }],
+          details: {
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        };
+      }
 
       const models = [state.config.workerModel, ...state.config.fallbackModels].filter(Boolean);
       let lastErr: Error | null = null;
@@ -409,11 +425,11 @@ function textOf(result: AgentToolResult<WorkerDetails>): string {
   return result.content?.[0]?.type === "text" ? (result.content[0] as { text: string }).text : "";
 }
 
-function formatBridgeFailure(
+function formatRpcFailure(
   result: AgentToolResult<WorkerDetails>,
   errorText: string,
 ): AgentToolResult<WorkerDetails> {
-  const text = `⚠️ **Delegation failed** via pi-subagents: ${errorText}
+  const text = `⚠️ **Delegation failed** via pi-subagents RPC: ${errorText}
 
 Files may have been partially changed — check \`git status\` and the quality gate
 below, then re-delegate the remaining work as a smaller, focused task.`;

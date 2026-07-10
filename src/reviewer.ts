@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 
+import { REVIEW_OUTPUT_SCHEMA, validateReviewOutput } from "./output-schemas.ts";
 import { persist } from "./persistence.ts";
 import { ReviewParams, reviewToolDescription, reviewerSystemPrompt } from "./prompts.ts";
 import {
@@ -18,14 +19,16 @@ import {
   summarizeTask,
   trackUsage,
 } from "./state.ts";
-import { buildBridgeTask, runViaBridge } from "./subagent-bridge.ts";
+import { buildRpcTask, runViaRpc } from "./subagent-rpc.ts";
 import { type WorkerDetails, runSubagent } from "./subagent.ts";
 
 type ReviewParamsT = Static<typeof ReviewParams>;
 
 /** Parse the structured `VERDICT: pass|warn|fail` line from reviewer output. */
 export function parseReviewVerdict(text: string): ReviewVerdict | null {
-  const match = /^\s*VERDICT:\s*(pass|warn|fail)\b/im.exec(text);
+  const match =
+    /^\s*VERDICT:\s*(pass|warn|fail)\b/im.exec(text) ??
+    /"verdict"\s*:\s*"(pass|warn|fail)"/i.exec(text);
   return match ? (match[1].toLowerCase() as ReviewVerdict) : null;
 }
 
@@ -55,7 +58,7 @@ export function resolveReviewerModel(state: BrainState, ctx: ExtensionContext): 
 }
 
 /**
- * Run an independent review (bridge first, spawner fallback) and parse the
+ * Run an independent review (RPC first, process fallback) and parse the
  * verdict. Shared by delegate_to_reviewer and the auto-review chain.
  */
 export async function runReview(
@@ -69,54 +72,61 @@ export async function runReview(
   const reviewerModel = resolveReviewerModel(state, ctx);
   const task = assembleReviewTask(req);
 
-  // Try pi-subagents bridge first — returns null if not installed.
-  const bridgeTask = buildBridgeTask(task, undefined, req.reads ?? []);
-  const bridgeOutcome = await runViaBridge(
+  // Try pi-subagents' documented RPC first — returns null if unavailable.
+  const rpcTask = buildRpcTask(task, undefined, req.reads ?? [], "review");
+  const rpcOutcome = await runViaRpc(
     pi,
     ctx,
     "brain-reviewer",
-    bridgeTask,
+    rpcTask,
     reviewerModel,
     signal,
     onUpdate,
+    REVIEW_OUTPUT_SCHEMA,
+    validateReviewOutput,
+    true,
   );
-  if (bridgeOutcome?.kind === "aborted") {
-    return { result: bridgeOutcome.result, verdict: null };
+  if (rpcOutcome?.kind === "aborted") {
+    return { result: rpcOutcome.result, verdict: null };
   }
-  if (bridgeOutcome?.kind === "detached") {
-    trackUsage(state, bridgeOutcome.result.details.usage);
+  if (rpcOutcome?.kind === "success") {
+    trackUsage(state, rpcOutcome.result.details.usage);
+    return finishReview(rpcOutcome.result);
+  }
+  if (rpcOutcome?.kind === "error" && !rpcOutcome.infra) {
+    trackUsage(state, rpcOutcome.result.details.usage);
+    return {
+      result: formatReviewFailure(rpcOutcome.result, rpcOutcome.errorText),
+      verdict: null,
+    };
+  }
+  // null (RPC absent) or infra error (unknown agent / model unavailable):
+  // the fallback spawner below is likely to succeed.
+  if (signal?.aborted) {
     return {
       result: {
-        ...bridgeOutcome.result,
-        content: [
-          {
-            type: "text",
-            text: `${resultText(bridgeOutcome.result)}\n\n⚠️ The reviewer DETACHED to ask a question via intercom — no verdict yet. Answer via intercom({"action":"pending"}) and wait for the 📨 subagent-result message, or verify the change yourself.`,
+        content: [{ type: "text", text: "Review aborted." }],
+        details: {
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 0,
           },
-        ],
+        },
       },
       verdict: null,
     };
   }
-  if (bridgeOutcome?.kind === "success") {
-    trackUsage(state, bridgeOutcome.result.details.usage);
-    return finishReview(bridgeOutcome.result);
-  }
-  if (bridgeOutcome?.kind === "error" && !bridgeOutcome.infra) {
-    trackUsage(state, bridgeOutcome.result.details.usage);
-    return {
-      result: formatReviewFailure(bridgeOutcome.result, bridgeOutcome.errorText),
-      verdict: null,
-    };
-  }
-  // null (bridge absent) or infra error (unknown agent / model unavailable):
-  // the fallback spawner below is likely to succeed.
 
   const result = await runSubagent(
     reviewerModel,
     reviewerSystemPrompt(),
     task,
-    "read,edit,write,bash",
+    "read,grep,find,ls,bash",
     signal,
     onUpdate,
     ctx.cwd,
@@ -196,7 +206,15 @@ function resultText(result: AgentToolResult<WorkerDetails>): string {
 
 function finishReview(result: AgentToolResult<WorkerDetails>): ReviewOutcome {
   const text = resultText(result);
-  const verdict = parseReviewVerdict(text);
+  const structured = result.details?.structuredOutput;
+  const structuredVerdict =
+    typeof structured === "object" &&
+    structured !== null &&
+    "verdict" in structured &&
+    ["pass", "warn", "fail"].includes(String(structured.verdict))
+      ? (structured.verdict as ReviewVerdict)
+      : null;
+  const verdict = structuredVerdict ?? parseReviewVerdict(text);
   if (verdict !== "fail") return { result, verdict };
 
   return {

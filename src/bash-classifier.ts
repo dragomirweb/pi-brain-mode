@@ -102,6 +102,7 @@ const SAFE_SIMPLE_HEADS = new Set([
   "ripgrep",
   "ag",
   "find",
+  "fd",
   "which",
   "whereis",
   "locate",

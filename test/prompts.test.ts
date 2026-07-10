@@ -132,13 +132,15 @@ describe("prompts", () => {
     );
   });
 
-  it("addendum offers review: false for trivial changes and flags duplicate 📨 messages", () => {
+  it("addendum offers review: false and defines the evidence-backed orchestration loop", () => {
     const state = makeBrainState({ ...config, reviewerEnabled: true, autoReview: true });
     const addendum = brainSystemAddendum(state);
 
     expect(addendum).toContain("review: false");
-    expect(addendum).toContain("📨");
-    expect(addendum).toContain("duplicate delivery");
+    expect(addendum).toContain("Analyze the problem");
+    expect(addendum).toContain("Analyze the codebase");
+    expect(addendum).toContain("Choose the execution shape");
+    expect(addendum).toContain(".pi/plans/current.md");
 
     // Without auto-review there is no review to skip.
     expect(brainSystemAddendum(makeBrainState(config))).not.toContain("review: false");

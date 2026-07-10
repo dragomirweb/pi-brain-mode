@@ -18,6 +18,8 @@ type WorkerUsage = {
 export type WorkerDetails = {
   usage: WorkerUsage;
   changedFiles?: string[];
+  /** Schema-controlled result returned by pi-subagents RPC. */
+  structuredOutput?: unknown;
 };
 
 type JsonObject = Record<string, unknown>;
@@ -251,8 +253,8 @@ function buildArgs(model: string, sysPromptFile: string, task: string, tools: st
     "-p",
     "--no-session",
     // Workers run with built-in tools only. Loading extensions in the child
-    // invites interference (Brain Mode stripping the worker's own edit/write,
-    // intercom rerouting its output) and slows startup.
+    // invites interference (including Brain Mode stripping the worker's own
+    // edit/write tools) and slows startup.
     "--no-extensions",
     "--model",
     model,

@@ -9,6 +9,7 @@ const vectors: Array<{ input: string; expected: "allow" | "block" }> = [
   { input: 'grep -rn "TODO" src', expected: "allow" },
   { input: 'rg "pattern" --type ts', expected: "allow" },
   { input: 'find . -name "*.ts"', expected: "allow" },
+  { input: "fd useAttendeeBookingLanding clients/app/src", expected: "allow" },
   { input: "git status", expected: "allow" },
   { input: "git log --oneline -20", expected: "allow" },
   { input: "git diff HEAD~1", expected: "allow" },

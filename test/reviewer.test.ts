@@ -1,10 +1,13 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseReviewVerdict, registerReviewerTool } from "../src/reviewer.ts";
 import { createBrainState, recordDelegation } from "../src/state.ts";
-import { resetBridgeDetection, setBridgeDetectTimeoutMs } from "../src/subagent-bridge.ts";
+import { resetRpcDetection, setRpcDetectTimeoutMs } from "../src/subagent-rpc.ts";
 import { setSpawnTimeoutMs } from "../src/subagent.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
@@ -55,6 +58,7 @@ type SpawnCall = {
 
 const children: FakeChild[] = [];
 const spawnCalls: SpawnCall[] = [];
+const rpcDirs: string[] = [];
 
 beforeEach(() => {
   children.length = 0;
@@ -73,14 +77,15 @@ beforeEach(() => {
 });
 
 beforeEach(() => {
-  resetBridgeDetection();
-  setBridgeDetectTimeoutMs(0);
+  resetRpcDetection();
+  setRpcDetectTimeoutMs(0);
 });
 
 afterEach(() => {
+  for (const dir of rpcDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   setSpawnTimeoutMs(600_000);
-  setBridgeDetectTimeoutMs(5_000);
-  resetBridgeDetection();
+  setRpcDetectTimeoutMs(1_000);
+  resetRpcDetection();
   vi.clearAllMocks();
 });
 
@@ -133,7 +138,7 @@ describe("delegate_to_reviewer", () => {
 
     const call = spawnCalls[0];
     expect(call.args.at(call.args.indexOf("--model") + 1)).toBe("claude-opus-4-8");
-    expect(call.args.at(call.args.indexOf("--tools") + 1)).toBe("read,edit,write,bash");
+    expect(call.args.at(call.args.indexOf("--tools") + 1)).toBe("read,grep,find,ls,bash");
     expect(call.options.env?.PI_BRAIN_WORKER).toBe("1");
   });
 
@@ -216,48 +221,41 @@ describe("delegate_to_reviewer", () => {
     expect(positionalTask).toContain("must Y");
   });
 
-  it("uses the bridge verdict and tracks session usage", async () => {
+  it("uses the schema-controlled RPC verdict and tracks session usage", async () => {
     const { tool, pi, state, ctx } = makeRegisteredReviewer(true, true);
-    pi.events.on("subagent:slash:request", (data: unknown) => {
-      const { requestId } = data as { requestId: string };
-      pi.events.emit("subagent:slash:started", { requestId });
-      pi.events.emit("subagent:slash:response", {
-        requestId,
-        result: {
-          content: [{ type: "text", text: "VERDICT: pass\nGATE: pass" }],
-          details: {
-            totalChildUsage: {
-              input: 50,
-              output: 900,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0.02,
-              turns: 1,
-            },
+    respondViaRpc(pi, {
+      state: "failed",
+      error: "Step failed: brain-reviewer",
+      totalTokens: { input: 50, output: 900, total: 950 },
+      totalCost: { costUsd: 0.02 },
+      steps: [
+        {
+          status: "failed",
+          error:
+            "Subagent completed without making edits for an implementation task. It appears to have returned planning output.",
+          turnCount: 1,
+          structuredOutput: {
+            verdict: "pass",
+            gate: { status: "pass", summary: "Gate passed" },
+            findings: [],
           },
         },
-        isError: false,
-      });
+      ],
     });
 
     const result = await tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
     const text = (result.content[0] as { text: string }).text;
-    expect(text).toContain("VERDICT: pass");
+    expect(text).toContain('"verdict": "pass"');
     expect(spawnMock).not.toHaveBeenCalled();
     expect(state.sessionUsage.runs).toBe(1);
     expect(state.sessionUsage.cost).toBeCloseTo(0.02);
   });
 
-  it("falls back to the spawner when the bridge reports an infra error", async () => {
+  it("falls back to the spawner when RPC reports an infrastructure error", async () => {
     const { tool, pi, ctx } = makeRegisteredReviewer(true, true);
-    pi.events.on("subagent:slash:request", (data: unknown) => {
-      const { requestId } = data as { requestId: string };
-      pi.events.emit("subagent:slash:response", {
-        requestId,
-        result: { content: [{ type: "text", text: "Unknown agent: brain-reviewer" }], details: {} },
-        isError: true,
-        errorText: "Unknown agent: brain-reviewer",
-      });
+    respondViaRpc(pi, undefined, {
+      code: "execution_failed",
+      message: "Unknown agent: brain-reviewer",
     });
 
     const resultPromise = tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
@@ -342,37 +340,12 @@ describe("delegate_to_reviewer", () => {
     expect(text).toContain("Review verdict: FAIL — re-delegate a fix");
   });
 
-  it("returns guidance without a verdict when the reviewer detaches via intercom", async () => {
+  it("surfaces an RPC task failure without a fallback spawn", async () => {
     const { tool, pi, ctx } = makeRegisteredReviewer(true, true);
-    pi.events.on("subagent:slash:request", (data: unknown) => {
-      const { requestId } = data as { requestId: string };
-      pi.events.emit("subagent:slash:response", {
-        requestId,
-        result: {
-          content: [{ type: "text", text: "Detached for intercom coordination: brain-reviewer." }],
-          details: {},
-        },
-        isError: false,
-      });
-    });
-
-    const result = await tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
-    const text = (result.content[0] as { text: string }).text;
-    expect(text).toContain("DETACHED");
-    expect(text).toContain("no verdict");
-    expect(spawnMock).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a bridge task failure without a fallback spawn", async () => {
-    const { tool, pi, ctx } = makeRegisteredReviewer(true, true);
-    pi.events.on("subagent:slash:request", (data: unknown) => {
-      const { requestId } = data as { requestId: string };
-      pi.events.emit("subagent:slash:response", {
-        requestId,
-        result: { content: [{ type: "text", text: "Reviewer crashed" }], details: {} },
-        isError: true,
-        errorText: "Reviewer crashed",
-      });
+    respondViaRpc(pi, {
+      state: "failed",
+      error: "Reviewer crashed",
+      steps: [{ status: "failed", error: "Reviewer crashed" }],
     });
 
     const result = await tool.execute("call-1", { intent: "do X" }, undefined, undefined, ctx);
@@ -388,6 +361,7 @@ describe("parseReviewVerdict", () => {
     expect(parseReviewVerdict("VERDICT: pass\nGATE: pass")).toBe("pass");
     expect(parseReviewVerdict("some preamble\nverdict: WARN\nfindings")).toBe("warn");
     expect(parseReviewVerdict("  VERDICT: fail")).toBe("fail");
+    expect(parseReviewVerdict('{"verdict":"pass"}')).toBe("pass");
   });
 
   it("returns null when no verdict line is present", () => {
@@ -412,4 +386,45 @@ function makeRegisteredReviewer(
   if (!tool) throw new Error("delegate_to_reviewer was not registered");
 
   return { tool, pi, state, ctx: { cwd, model } as unknown as ExtensionContext };
+}
+
+/** Make the mock event bus answer stable pi-subagents RPC requests. */
+function respondViaRpc(
+  pi: ReturnType<typeof makeMockPi>["pi"],
+  status?: Record<string, unknown>,
+  spawnError?: { code: string; message: string },
+) {
+  const dir = mkdtempSync(join(tmpdir(), "brain-rpc-review-test-"));
+  rpcDirs.push(dir);
+  if (status) {
+    writeFileSync(
+      join(dir, "status.json"),
+      JSON.stringify({ lifecycleArtifactVersion: 1, runId: "run-1", ...status }),
+    );
+  }
+  pi.events.on("subagents:rpc:v1:request", (data: unknown) => {
+    const request = data as { requestId: string; method: string };
+    const event = `subagents:rpc:v1:reply:${request.requestId}`;
+    if (request.method === "spawn" && spawnError) {
+      pi.events.emit(event, {
+        version: 1,
+        requestId: request.requestId,
+        success: false,
+        error: spawnError,
+      });
+      return;
+    }
+    const responseData =
+      request.method === "ping"
+        ? { version: 1 }
+        : request.method === "spawn"
+          ? { details: { runId: "run-1", asyncDir: dir } }
+          : {};
+    pi.events.emit(event, {
+      version: 1,
+      requestId: request.requestId,
+      success: true,
+      data: responseData,
+    });
+  });
 }
