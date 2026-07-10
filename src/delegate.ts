@@ -16,7 +16,7 @@ import {
   validateCoderOutput,
   validateRunnerOutput,
 } from "./output-schemas.ts";
-import { persist } from "./persistence.ts";
+import { persistSession } from "./persistence.ts";
 import {
   DelegateParams,
   delegateToolDescription,
@@ -206,7 +206,7 @@ export function registerDelegateTool(pi: ExtensionAPI, state: BrainState): void 
               cost: result.details?.usage?.cost ?? 0,
               at: new Date().toISOString(),
             });
-            persist(pi, state);
+            persistSession(pi, state);
             return result;
           }
           lastErr = toError(err);
@@ -270,27 +270,34 @@ async function finalizeDelegation(
     !signal?.aborted;
 
   if (shouldAutoReview) {
-    const review = await runReview(
-      pi,
-      state,
-      ctx,
-      {
-        intent: params.task,
-        acceptanceCriteria: params.plan,
-        reads: result.details?.changedFiles ?? [],
-        // Only pass the gate result this delegation actually produced — a
-        // stale lastGate from an earlier delegation would mislead the reviewer.
-        gate: gate.ran ? state.lastGate : null,
-        workerReport: tail(textOf(result), 1200),
-      },
-      signal,
-      onUpdate,
-    );
-    verdict = review.verdict;
-    final = appendText(
-      final,
-      `\n\n---\n### Independent review (ran automatically)\n${textOf(review.result)}`,
-    );
+    try {
+      const review = await runReview(
+        pi,
+        state,
+        ctx,
+        {
+          intent: params.task,
+          acceptanceCriteria: params.plan,
+          reads: result.details?.changedFiles ?? [],
+          // Only pass the gate result this delegation actually produced — a
+          // stale lastGate from an earlier delegation would mislead the reviewer.
+          gate: gate.ran ? state.lastGate : null,
+          workerReport: tail(textOf(result), 1200),
+        },
+        signal,
+        onUpdate,
+      );
+      verdict = review.verdict;
+      final = appendText(
+        final,
+        `\n\n---\n### Independent review (ran automatically)\n${textOf(review.result)}`,
+      );
+    } catch (error) {
+      final = appendText(
+        final,
+        `\n\n---\n⚠️ Independent review could not complete: ${tail(toError(error).message, 1000)}\nThe coder result and quality-gate outcome above were preserved, but the change still needs review. Retry \`delegate_to_reviewer\` or inspect the diff yourself before declaring completion.`,
+      );
+    }
   }
 
   recordDelegation(state, {
@@ -302,7 +309,7 @@ async function finalizeDelegation(
     cost: result.details?.usage?.cost ?? 0,
     at: new Date().toISOString(),
   });
-  persist(pi, state);
+  persistSession(pi, state);
 
   return final;
 }

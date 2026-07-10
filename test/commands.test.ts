@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { registerBrainCommand } from "../src/commands.ts";
-import { PERSIST_KEY, createBrainState } from "../src/state.ts";
+import { loadSettings, setSettingsPathForTests } from "../src/persistence.ts";
+import { createBrainState } from "../src/state.ts";
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 const baseConfig = {
+  thinkingModel: "",
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude/opus-4-8"],
   allowBash: true,
@@ -20,38 +26,61 @@ const defaultModels = [
   { provider: "anthropic", id: "claude-sonnet-4" },
 ];
 
+let settingsPath: string;
+
+beforeEach(() => {
+  settingsPath = join(tmpdir(), `pi-brain-commands-${randomUUID()}`, "settings.json");
+  setSettingsPathForTests(settingsPath);
+});
+
+afterEach(async () => {
+  setSettingsPathForTests(undefined);
+  await rm(dirname(settingsPath), { recursive: true, force: true });
+});
+
 describe("/brain model configuration commands", () => {
+  it("registers /brains as an alias with the same behavior", async () => {
+    const { commands, ctx, notifications } = setup();
+    const brains = commands.get("brains");
+    if (!brains) throw new Error("brains alias was not registered");
+
+    await brains.handler("status", ctx);
+
+    expect(notifications.at(-1)?.msg ?? "").toContain("Brain Mode:");
+  });
+
   it("sets and persists the worker model", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
 
     await brain.handler("worker openai-codex/gpt-5.5", ctx);
 
     expect(state.config.workerModel).toBe("openai-codex/gpt-5.5");
-    expect(entries.at(-1)).toMatchObject({
-      customType: PERSIST_KEY,
-      data: { v: 2, config: { workerModel: "openai-codex/gpt-5.5" } },
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({
+      workerModel: "openai-codex/gpt-5.5",
     });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
 
   it("rejects an unknown worker model without mutating or persisting", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
     state.config.workerModel = "existing/model";
 
     await brain.handler("worker bogus/nope", ctx);
 
     expect(state.config.workerModel).toBe("existing/model");
-    expect(entries.filter((entry) => entry.customType === PERSIST_KEY)).toHaveLength(0);
+    await expect(loadSettings(ctx.cwd)).resolves.toBeNull();
     expect(notifications.at(-1)).toMatchObject({ type: "error" });
   });
 
   it("sets and persists the fallback model chain", async () => {
-    const { brain, ctx, state, entries } = setup();
+    const { brain, ctx, state } = setup();
 
     await brain.handler("fallback claude/opus-4-8,anthropic/claude-sonnet-4", ctx);
 
     expect(state.config.fallbackModels).toEqual(["claude/opus-4-8", "anthropic/claude-sonnet-4"]);
-    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({
+      fallbackModels: ["claude/opus-4-8", "anthropic/claude-sonnet-4"],
+    });
   });
 
   it("clears and persists the fallback model chain", async () => {
@@ -63,7 +92,7 @@ describe("/brain model configuration commands", () => {
   });
 
   it("rejects a partially unknown fallback chain without mutating", async () => {
-    const { brain, ctx, state, entries, notifications } = setup({
+    const { brain, ctx, state, notifications } = setup({
       models: [...defaultModels, { provider: "good", id: "one" }],
     });
     state.config.fallbackModels = ["existing/fallback"];
@@ -71,18 +100,31 @@ describe("/brain model configuration commands", () => {
     await brain.handler("fallback good/one,bogus/x", ctx);
 
     expect(state.config.fallbackModels).toEqual(["existing/fallback"]);
-    expect(entries.filter((entry) => entry.customType === PERSIST_KEY)).toHaveLength(0);
+    await expect(loadSettings(ctx.cwd)).resolves.toBeNull();
     expect(notifications.at(-1)).toMatchObject({ type: "error" });
   });
 
-  it("switches the thinking model without persisting", async () => {
-    const { brain, ctx, entries, notifications, setModelCalls } = setup();
+  it("switches and persists the thinking model", async () => {
+    const { brain, ctx, state, notifications, setModelCalls } = setup();
 
     await brain.handler("thinking claude/opus-4-8", ctx);
 
     expect(setModelCalls).toEqual([{ provider: "claude", id: "opus-4-8" }]);
+    expect(state.config.thinkingModel).toBe("claude/opus-4-8");
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
-    expect(entries.filter((entry) => entry.customType === PERSIST_KEY)).toHaveLength(0);
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({
+      thinkingModel: "claude/opus-4-8",
+    });
+  });
+
+  it("clears the persisted thinking-model override", async () => {
+    const { brain, ctx, state } = setup();
+    state.config.thinkingModel = "claude/opus-4-8";
+
+    await brain.handler("thinking current", ctx);
+
+    expect(state.config.thinkingModel).toBe("");
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({ thinkingModel: "" });
   });
 
   it("rejects an unknown thinking model without calling setModel", async () => {
@@ -121,15 +163,12 @@ describe("/brain model configuration commands", () => {
   });
 
   it("enables the reviewer and persists", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
 
     await brain.handler("reviewer on", ctx);
 
     expect(state.config.reviewerEnabled).toBe(true);
-    expect(entries.at(-1)).toMatchObject({
-      customType: PERSIST_KEY,
-      data: { v: 2, config: { reviewerEnabled: true } },
-    });
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({ reviewerEnabled: true });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
 
@@ -143,48 +182,46 @@ describe("/brain model configuration commands", () => {
   });
 
   it("sets and persists the reviewer model", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
 
     await brain.handler("reviewer claude/opus-4-8", ctx);
 
     expect(state.config.reviewerModel).toBe("claude/opus-4-8");
-    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({
+      reviewerModel: "claude/opus-4-8",
+    });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
 
   it("/brain reviewer auto resets the reviewer model", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
     state.config.reviewerModel = "claude/opus-4-8";
 
     await brain.handler("reviewer auto", ctx);
 
     expect(state.config.reviewerModel).toBe("");
-    expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({ reviewerModel: "" });
     expect(notifications.at(-1)).toMatchObject({ type: "info" });
   });
 
   it("/brain reviewer always|manual toggles auto-review and persists", async () => {
-    const { brain, ctx, state, entries } = setup();
+    const { brain, ctx, state } = setup();
 
     await brain.handler("reviewer always", ctx);
     expect(state.config.autoReview).toBe(true);
-    expect(entries.at(-1)).toMatchObject({
-      customType: PERSIST_KEY,
-      data: { v: 2, config: { autoReview: true } },
-    });
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({ autoReview: true });
 
     await brain.handler("reviewer manual", ctx);
     expect(state.config.autoReview).toBe(false);
   });
 
   it("/brain gate sets, clears, and disables the quality gate command", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
 
     await brain.handler("gate pnpm --filter app tsc", ctx);
     expect(state.config.gateCommand).toBe("pnpm --filter app tsc");
-    expect(entries.at(-1)).toMatchObject({
-      customType: PERSIST_KEY,
-      data: { v: 2, config: { gateCommand: "pnpm --filter app tsc" } },
+    await expect(loadSettings(ctx.cwd)).resolves.toMatchObject({
+      gateCommand: "pnpm --filter app tsc",
     });
     expect(notifications.at(-1)?.msg ?? "").toContain("pnpm --filter app tsc");
 
@@ -222,13 +259,13 @@ describe("/brain model configuration commands", () => {
   });
 
   it("rejects an unknown reviewer model without mutating or persisting", async () => {
-    const { brain, ctx, state, entries, notifications } = setup();
+    const { brain, ctx, state, notifications } = setup();
     state.config.reviewerModel = "existing/model";
 
     await brain.handler("reviewer bogus/x", ctx);
 
     expect(state.config.reviewerModel).toBe("existing/model");
-    expect(entries.filter((entry) => entry.customType === PERSIST_KEY)).toHaveLength(0);
+    await expect(loadSettings(ctx.cwd)).resolves.toBeNull();
     expect(notifications.at(-1)).toMatchObject({ type: "error" });
   });
 
@@ -271,6 +308,7 @@ describe("/brain settings menu", () => {
 
     expect(state.enabled).toBe(true);
     expect(notifications.at(-1)?.msg ?? "").toContain("Brain Mode ON");
+    await expect(loadSettings(ctx.cwd)).resolves.toBeNull();
   });
 
   it("toggles brain mode off via the menu", async () => {
@@ -282,6 +320,7 @@ describe("/brain settings menu", () => {
     await brain.handler("", ctx);
 
     expect(state.enabled).toBe(false);
+    await expect(loadSettings(ctx.cwd)).resolves.toBeNull();
   });
 
   it("changes the worker model via the model picker", async () => {
@@ -376,6 +415,7 @@ type SetupOptions = Parameters<typeof makeMockPi>[0];
 function setup(opts?: SetupOptions) {
   const mock = makeMockPi(opts);
   const state = createBrainState({
+    thinkingModel: baseConfig.thinkingModel,
     workerModel: baseConfig.workerModel,
     fallbackModels: [...baseConfig.fallbackModels],
     allowBash: baseConfig.allowBash,

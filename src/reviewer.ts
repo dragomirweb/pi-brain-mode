@@ -7,7 +7,7 @@ import type {
 import type { Static } from "typebox";
 
 import { REVIEW_OUTPUT_SCHEMA, validateReviewOutput } from "./output-schemas.ts";
-import { persist } from "./persistence.ts";
+import { persistSession } from "./persistence.ts";
 import { ReviewParams, reviewToolDescription, reviewerSystemPrompt } from "./prompts.ts";
 import {
   type BrainState,
@@ -167,6 +167,7 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
         );
       }
       const reads = params.reads?.length ? params.reads : (lastCoder?.changedFiles ?? []);
+      const gate = !params.intent?.trim() && lastCoder?.gate !== "none" ? state.lastGate : null;
 
       const { result, verdict } = await runReview(
         pi,
@@ -178,7 +179,7 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
           focus: params.focus,
           base: params.base,
           reads,
-          gate: state.lastGate,
+          gate,
         },
         signal,
         onUpdate,
@@ -193,7 +194,7 @@ export function registerReviewerTool(pi: ExtensionAPI, state: BrainState): void 
         cost: result.details?.usage?.cost ?? 0,
         at: new Date().toISOString(),
       });
-      persist(pi, state);
+      persistSession(pi, state);
 
       return result;
     },

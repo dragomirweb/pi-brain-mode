@@ -5,6 +5,8 @@ export const REVIEWER_TOOL = "delegate_to_reviewer";
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
 export interface BrainConfig {
+  /** Orchestrator model restored when a session starts. "" keeps Pi's current model. */
+  thinkingModel: string;
   workerModel: string;
   fallbackModels: string[];
   allowBash: boolean;
@@ -151,8 +153,6 @@ export function applyBrainTools(current: string[], config: BrainConfig, active: 
 export const PERSIST_KEY = "brain-v1";
 
 export interface BrainPersisted {
-  v: 2;
-  enabled: boolean;
-  config: BrainConfig;
+  v: 3;
   journal: DelegationRecord[];
 }

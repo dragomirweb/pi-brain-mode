@@ -18,6 +18,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const baseConfig = {
+  thinkingModel: "",
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
@@ -309,6 +310,40 @@ describe("delegate_to_reviewer", () => {
     await resultPromise;
 
     expect(state.journal.at(-1)).toMatchObject({ kind: "reviewer", verdict: "pass" });
+  });
+
+  it("does not reuse stale gate context for a no-gate delegation", async () => {
+    const { tool, state, ctx } = makeRegisteredReviewer(true, true);
+    state.lastGate = { ok: true, command: "npm run check", output: "older gate passed" };
+    recordDelegation(state, {
+      kind: "coder",
+      task: "change without a gate",
+      changedFiles: ["src/b.ts"],
+      gate: "none",
+      verdict: null,
+      cost: 0,
+      at: "2026-07-10T00:00:00.000Z",
+    });
+
+    const resultPromise = tool.execute("call-1", {}, undefined, undefined, ctx);
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    const positionalTask = spawnCalls[0].args.at(-1);
+    expect(positionalTask).toContain("change without a gate");
+    expect(positionalTask).not.toContain("Quality gate (already run");
+    expect(positionalTask).not.toContain("older gate passed");
+
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "VERDICT: pass" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await expect(resultPromise).resolves.toBeDefined();
   });
 
   it("throws when no intent is given and nothing was delegated", async () => {

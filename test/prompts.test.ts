@@ -12,6 +12,7 @@ import {
 import { createBrainState as makeBrainState, recordDelegation, trackUsage } from "../src/state.ts";
 
 const config = {
+  thinkingModel: "",
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,

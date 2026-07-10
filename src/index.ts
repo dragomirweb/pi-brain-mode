@@ -17,22 +17,20 @@ export default function piBrain(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   if (typeof pi.setActiveTools !== "function" || typeof pi.on !== "function") {
-    pi.registerCommand?.("brain", {
+    const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
       description: "pi-brain (unavailable on this host)",
       handler: async (_args: string, ctx) => {
         ctx.ui.notify("pi-brain needs setActiveTools + pi.on; unsupported host.", "error");
       },
-    });
+    };
+    pi.registerCommand?.("brain", command);
+    pi.registerCommand?.("brains", command);
     return;
   }
 
   registerBrainFlags(pi);
   const config = resolveConfig(pi, DEFAULT_CONFIG);
   const state = createBrainState(config);
-  // Brain Mode defaults ON (opt out with --brain-off). session_start applies
-  // the flag after loading persistence, so it cannot be overwritten by a
-  // previously enabled session.
-  state.enabled = pi.getFlag("brain-off") !== true;
 
   registerBrainCommand(pi, state);
   registerBrainEvents(pi, state);

@@ -19,6 +19,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const baseConfig = {
+  thinkingModel: "",
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
@@ -755,6 +756,60 @@ describe("delegate_to_coder", () => {
       kind: "coder",
       gate: "pass",
       verdict: "warn",
+      changedFiles: ["src/a.ts"],
+    });
+  });
+
+  it("preserves the coder result and gate when auto-review crashes", async () => {
+    const { tool, ctx, state } = makeRegisteredTool(
+      true,
+      "/tmp/project",
+      { "brain-gate-command": "npm run check" },
+      { reviewerEnabled: true, autoReview: true },
+    );
+
+    const resultPromise = tool.execute(
+      "call-1",
+      { task: "add feature" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0].pushStdout({
+      type: "tool_execution_end",
+      toolName: "edit",
+      args: { path: "src/a.ts" },
+      isError: false,
+    });
+    children[0].pushStdout({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "changed src/a.ts" }],
+        stopReason: "end",
+      },
+    });
+    children[0].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    children[1].close(0);
+
+    await vi.waitFor(() => expect(children).toHaveLength(3));
+    children[2].pushStderr("review provider unavailable");
+    children[2].close(1);
+
+    const result = await resultPromise;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Quality gate");
+    expect(text).toContain("PASS");
+    expect(text).toContain("Independent review could not complete");
+    expect(text).toContain("review provider unavailable");
+    expect(state.journal.at(-1)).toMatchObject({
+      kind: "coder",
+      gate: "pass",
+      verdict: null,
       changedFiles: ["src/a.ts"],
     });
   });

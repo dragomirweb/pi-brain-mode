@@ -30,9 +30,9 @@ No third-party fork is needed.
 
 ## Usage
 
-**Brain Mode is ON by default** once the extension is installed (opt out at launch with `--brain-off`, or per session with `/brain off` — both are respected across restarts). The reviewer and auto-review are also on by default, so out of the box every delegation is gated *and* independently reviewed.
+**Brain Mode is OFF by default.** Turn it on for the current session with `/brain on` (or launch Pi with `--brain-on`). The on/off toggle is deliberately not persisted, so a new, resumed, forked, or reloaded session starts off again unless `--brain-on` was supplied. The reviewer and auto-review settings default to on and take effect whenever Brain Mode is enabled.
 
-Use the `/brain` command:
+Use `/brain` or its `/brains` alias. With no arguments, either command opens the interactive settings menu:
 
 ```text
 /brain on
@@ -40,7 +40,7 @@ Use the `/brain` command:
 /brain status
 /brain log
 /brain worker <id>
-/brain thinking <id>
+/brain thinking <id|current>
 /brain fallback <id[,id]|none>
 /brain reviewer on|off
 /brain reviewer always|manual
@@ -48,7 +48,7 @@ Use the `/brain` command:
 /brain gate <cmd|auto|off>
 ```
 
-`/brain worker <id>` and `/brain fallback <id[,id]|none>` update the persisted worker model and fallback chain for future delegations. `/brain thinking <id>` switches the orchestrator model for the current session only; it is a one-shot switch and is not persisted. Unknown model names are rejected; use `provider/model-id` or a unique bare model id from `pi --list-models`. `/brain log` shows the delegation journal (see below); `/brain status` includes the session spend across all delegations.
+Worker, fallback, thinking, reviewer, auto-review, bash, and quality-gate choices are persisted in `~/.pi/agent/pi-brain-mode/settings.json` (or the configured Pi agent directory). `/brain thinking <id>` switches the orchestrator immediately and restores that model on future sessions; `/brain thinking current` clears the override and follows Pi's current model again. Unknown model names are rejected; use `provider/model-id` or a unique bare model id from `pi --list-models`. `/brain log` shows the delegation journal (see below); `/brain status` includes the session spend across all delegations.
 
 `/brain gate <cmd|auto|off>` sets the persisted quality-gate command. This matters in monorepos: auto-detect only finds a root-level `check`/`test` script, so without it the gate silently never runs — each delegation result then carries an explicit "Quality gate: none configured" notice. The configured command is also handed to the worker (so it runs the *right* check instead of guessing) and its result to the reviewer (so it spot-checks instead of re-running everything).
 
@@ -58,7 +58,7 @@ Use the `/brain` command:
 
 When the reviewer is enabled, the orchestrator gains a `delegate_to_reviewer` tool. The reviewer inspects the coder's diff, verifies the quality gate (it receives the gate result the extension already ran and spot-checks rather than blindly re-running), runs `fallow audit` if installed, judges the change against the stated `intent`/`acceptanceCriteria`, and returns a structured verdict (pass/warn/fail) plus findings. The reviewer is read-only: every fix goes back through the coder and quality gate. `intent` and `reads` default to the most recent delegation, so a bare `delegate_to_reviewer` call reviews the last change.
 
-**Auto-review** (default: **on**, toggle with `/brain reviewer always|manual` or `--brain-no-auto-review`): after each successful delegation that passes the gate, the reviewer runs automatically and its verdict is appended to the delegation result — coder → gate → review in a single tool call. The verdict is parsed and recorded in the journal; a `fail` verdict comes with an explicit instruction to re-delegate a fix. Auto-review is skipped when the gate fails (a fix delegation is coming anyway), for read-only runs, and when the orchestrator passes `review: false` on a trivial mechanical delegation.
+**Auto-review** (default: **on**, toggle with `/brain reviewer always|manual` or `--brain-no-auto-review`): after each successful delegation that passes the gate, the reviewer runs automatically and its verdict is appended to the delegation result — coder → gate → review in a single tool call. The verdict is parsed and recorded in the journal; a `fail` verdict comes with an explicit instruction to re-delegate a fix. If the reviewer itself fails, the completed coder result and gate outcome are preserved with an explicit retry-review warning. Auto-review is skipped when the gate fails (a fix delegation is coming anyway), for read-only runs, and when the orchestrator passes `review: false` on a trivial mechanical delegation.
 
 The reviewer is tuned to be cheap on small diffs: it receives the extension's gate result plus the worker's own report of which checks it ran, and is instructed to spot-check with at most one targeted command scoped to the changed files rather than re-running repo-wide compiles the worker already ran. In a monorepo, that turns a ~4-minute review into under a minute.
 
@@ -85,7 +85,8 @@ The failure loop also has memory: when a delegation fails the quality gate, the 
 
 ## Configuration
 
-- `--brain-off`: start with Brain Mode disabled (default: enabled).
+- `--brain-on`: start this session with Brain Mode enabled (default: disabled).
+- `--brain-off`: explicitly keep Brain Mode disabled; this compatibility flag overrides `--brain-on` if both are supplied.
 - `--brain-worker-model <model>`: primary worker model. Defaults to `openai-codex/gpt-5.5`.
 - `--brain-worker-fallback <model[,model...]>`: fallback worker model list. Defaults to `claude-opus-4-8`.
 - `--brain-no-bash`: hard-removes `bash` from the brain toolset. Without this flag, `bash` is kept and gated.
@@ -108,7 +109,7 @@ When [pi-subagents](https://github.com/nicobailon/pi-subagents) >= 0.34 is insta
 
 If pi-subagents is unavailable (detected once per session, then skipped until `/reload`), `delegate_to_coder` spawns a child `pi` subprocess with an inline worker prompt, a restricted tool allowlist (`read,edit,write,bash`, or `read,grep,find,ls,bash` for `readOnly` runs), `--no-session`, and JSON/NDJSON streaming. The parent reads worker progress from NDJSON events and returns a compact final summary.
 
-Brain Mode persists its on/off state, configuration, and delegation journal in the Pi session and re-applies the active toolset on session start or reload. It also re-anchors the system prompt (including the recent-delegations journal) each turn so the orchestrator-worker split survives prompt rebuilds and compaction.
+Brain Mode persists configuration in its user-level settings file and keeps the quality-gate command per project, so a monorepo-specific command does not leak into unrelated repositories. It persists the delegation journal in the Pi session. The on/off toggle is session-only and resets to off on session start or reload. While enabled, the extension re-anchors the system prompt (including the recent-delegations journal) each turn so the orchestrator-worker split survives prompt rebuilds and compaction.
 
 ## Degraded mode
 

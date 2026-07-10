@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { enable, registerBrainCommand } from "../src/commands.ts";
 import { registerBrainFlags, resolveConfig } from "../src/config.ts";
 import { registerDelegateTool } from "../src/delegate.ts";
 import { registerBrainEvents } from "../src/events.ts";
+import { saveSettings, setSettingsPathForTests } from "../src/persistence.ts";
 import {
   DELEGATE_TOOL,
   type DelegationRecord,
@@ -19,6 +24,7 @@ import {
 import { makeMockPi } from "./helpers/mock-pi.ts";
 
 const baseConfig = {
+  thinkingModel: "",
   workerModel: "openai-codex/gpt-5.5",
   fallbackModels: ["claude-opus-4-8"],
   allowBash: true,
@@ -30,8 +36,20 @@ const baseConfig = {
 
 const sessionReasons = ["startup", "reload", "new", "resume", "fork"];
 
+let settingsPath: string;
+
+beforeEach(() => {
+  settingsPath = join(tmpdir(), `pi-brain-state-${randomUUID()}`, "settings.json");
+  setSettingsPathForTests(settingsPath);
+});
+
+afterEach(async () => {
+  setSettingsPathForTests(undefined);
+  await rm(dirname(settingsPath), { recursive: true, force: true });
+});
+
 describe("brain state machine", () => {
-  it("enable removes edit/write and adds delegate_to_coder, then persists", () => {
+  it("enable removes edit/write and adds delegate_to_coder without persisting the toggle", () => {
     const { pi, entries, setActiveToolsCalls } = makeMockPi({
       initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
     });
@@ -45,10 +63,7 @@ describe("brain state machine", () => {
     expect(applied).toContain(DELEGATE_TOOL);
     expect(applied).not.toContain("edit");
     expect(applied).not.toContain("write");
-    expect(entries.at(-1)).toMatchObject({
-      customType: PERSIST_KEY,
-      data: { v: 2, enabled: true, config: baseConfig },
-    });
+    expect(entries).toHaveLength(0);
   });
 
   it("enable preserves tools from other extensions", () => {
@@ -108,7 +123,7 @@ describe("brain state machine", () => {
   });
 
   it.each(sessionReasons)(
-    "re-applies persisted enabled toolset on %s session_start",
+    "ignores a legacy persisted enabled toggle on %s session_start",
     async (reason) => {
       const { pi, entries, setActiveToolsCalls, dispatch } = makeMockPi();
       const state = createBrainState(baseConfig);
@@ -119,13 +134,35 @@ describe("brain state machine", () => {
       await dispatch("session_start", { reason });
 
       expect(entries.at(-1)).toMatchObject({ customType: PERSIST_KEY });
-      expect(state.enabled).toBe(true);
+      expect(state.enabled).toBe(false);
       const applied = setActiveToolsCalls.at(-1);
-      expect(applied).toContain(DELEGATE_TOOL);
-      expect(applied).not.toContain("edit");
-      expect(applied).not.toContain("write");
+      expect(applied).not.toContain(DELEGATE_TOOL);
+      expect(applied).toContain("edit");
+      expect(applied).toContain("write");
     },
   );
+
+  it("restores durable settings while keeping Brain Mode off", async () => {
+    const { pi, ctx, dispatch, setModelCalls } = makeMockPi();
+    await saveSettings(
+      {
+        ...baseConfig,
+        thinkingModel: "claude/opus-4-8",
+        workerModel: "anthropic/claude-sonnet-4",
+        gateCommand: "npm run check:focused",
+      },
+      ctx.cwd,
+    );
+    const state = createBrainState(baseConfig);
+    registerBrainEvents(pi, state);
+
+    await dispatch("session_start", { reason: "resume" });
+
+    expect(state.enabled).toBe(false);
+    expect(state.config.workerModel).toBe("anthropic/claude-sonnet-4");
+    expect(state.config.gateCommand).toBe("npm run check:focused");
+    expect(setModelCalls).toEqual([{ provider: "claude", id: "opus-4-8" }]);
+  });
 
   it("composes the brain addendum with the existing system prompt only when enabled", async () => {
     const { pi, dispatch } = makeMockPi();
@@ -184,7 +221,7 @@ describe("brain state machine", () => {
 
   it("keeps brain-no-bash hard-off over persisted bash config on session_start", async () => {
     const { pi, setActiveToolsCalls, dispatch } = makeMockPi({
-      flags: { "brain-no-bash": true },
+      flags: { "brain-on": true, "brain-no-bash": true },
       initialTools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
     });
     registerBrainFlags(pi);

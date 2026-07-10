@@ -1,40 +1,13 @@
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
-import { persist } from "./persistence.ts";
+import { canonicalModelId, resolveModel } from "./config.ts";
+import { saveSettings } from "./persistence.ts";
 import * as msg from "./prompts.ts";
 import { type BrainState, applyBrainTools } from "./state.ts";
 
-type ModelRegistry = ExtensionContext["modelRegistry"];
-type Model = NonNullable<ExtensionContext["model"]>;
-
-function canonicalModelId(model: Model): string {
-  return `${model.provider}/${model.id}`;
-}
-
-function resolveModel(registry: ModelRegistry, idStr: string): Model | undefined {
-  const trimmed = idStr.trim();
-  if (trimmed === "") return undefined;
-
-  if (trimmed.includes("/")) {
-    const slashIndex = trimmed.indexOf("/");
-    const provider = trimmed.slice(0, slashIndex);
-    const modelId = trimmed.slice(slashIndex + 1);
-    const found = registry.find(provider, modelId);
-    if (found) return found;
-  }
-
-  return registry
-    .getAll()
-    .find((model) => canonicalModelId(model) === trimmed || model.id === trimmed);
-}
-
 export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void {
-  pi.registerCommand("brain", {
-    description: "Brain Mode: /brain (settings) | on | off | status | help",
+  const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+    description: "Brain Mode: /brain or /brains (settings) | on | off | status | help",
     getArgumentCompletions: (prefix: string) => {
       const verbs = [
         "on",
@@ -97,7 +70,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           return;
         }
         state.config.workerModel = canonicalModelId(resolved);
-        persist(pi, state);
+        await persistConfig(state, ctx);
         ctx.ui.notify(msg.workerModelSet(state), "info");
         return;
       }
@@ -108,7 +81,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
         }
         if (value.toLowerCase() === "none") {
           state.config.fallbackModels = [];
-          persist(pi, state);
+          await persistConfig(state, ctx);
           ctx.ui.notify(msg.fallbackSet(state), "info");
           return;
         }
@@ -126,13 +99,19 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           resolved.push(canonicalModelId(model));
         }
         state.config.fallbackModels = resolved;
-        persist(pi, state);
+        await persistConfig(state, ctx);
         ctx.ui.notify(msg.fallbackSet(state), "info");
         return;
       }
       if (verb === "thinking") {
         if (value === "") {
           ctx.ui.notify(msg.brainUsage(), "warning");
+          return;
+        }
+        if (["auto", "current"].includes(value.toLowerCase())) {
+          state.config.thinkingModel = "";
+          await persistConfig(state, ctx);
+          ctx.ui.notify("Thinking model will follow Pi's current model.", "info");
           return;
         }
         const resolved = resolveModel(ctx.modelRegistry, value);
@@ -145,7 +124,9 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           ctx.ui.notify(msg.noApiKey(value), "error");
           return;
         }
-        ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
+        state.config.thinkingModel = canonicalModelId(resolved);
+        await persistConfig(state, ctx);
+        ctx.ui.notify(msg.thinkingModelSet(state.config.thinkingModel), "info");
         return;
       }
       if (verb === "reviewer") {
@@ -156,19 +137,19 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           return;
         }
         if (lowered === "on" || lowered === "off") {
-          setReviewerEnabled(pi, state, lowered === "on");
+          await setReviewerEnabled(pi, state, ctx, lowered === "on");
           ctx.ui.notify(msg.reviewerSet(state), "info");
           return;
         }
         if (lowered === "always" || lowered === "manual") {
           state.config.autoReview = lowered === "always";
-          persist(pi, state);
+          await persistConfig(state, ctx);
           ctx.ui.notify(msg.autoReviewSet(state), "info");
           return;
         }
         if (lowered === "auto") {
           state.config.reviewerModel = "";
-          persist(pi, state);
+          await persistConfig(state, ctx);
           ctx.ui.notify(msg.reviewerModelSet(state), "info");
           return;
         }
@@ -178,7 +159,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           return;
         }
         state.config.reviewerModel = canonicalModelId(resolved);
-        persist(pi, state);
+        await persistConfig(state, ctx);
         ctx.ui.notify(msg.reviewerModelSet(state), "info");
         return;
       }
@@ -187,7 +168,7 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
           ctx.ui.notify(msg.gateSet(state), "info");
           return;
         }
-        setGateCommand(pi, state, value);
+        await setGateCommand(state, ctx, value);
         ctx.ui.notify(msg.gateSet(state), "info");
         return;
       }
@@ -197,7 +178,9 @@ export function registerBrainCommand(pi: ExtensionAPI, state: BrainState): void 
       }
       ctx.ui.notify(msg.brainUsage(), "warning");
     },
-  });
+  };
+  pi.registerCommand("brain", command);
+  pi.registerCommand("brains", command);
 }
 
 async function openSettingsMenu(
@@ -206,7 +189,8 @@ async function openSettingsMenu(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   while (true) {
-    const thinkingModelId = ctx.model ? canonicalModelId(ctx.model) : "unknown";
+    const thinkingModelId =
+      state.config.thinkingModel || (ctx.model ? canonicalModelId(ctx.model) : "unknown");
     const reviewerModelLabel = state.config.reviewerModel || "auto";
 
     const options: string[] = [
@@ -255,7 +239,7 @@ async function openSettingsMenu(
         break;
 
       case "Reviewer":
-        setReviewerEnabled(pi, state, !state.config.reviewerEnabled);
+        await setReviewerEnabled(pi, state, ctx, !state.config.reviewerEnabled);
         ctx.ui.notify(msg.reviewerSet(state), "info");
         break;
 
@@ -265,7 +249,7 @@ async function openSettingsMenu(
 
       case "Auto-review":
         state.config.autoReview = !state.config.autoReview;
-        persist(pi, state);
+        await persistConfig(state, ctx);
         ctx.ui.notify(msg.autoReviewSet(state), "info");
         break;
 
@@ -275,7 +259,7 @@ async function openSettingsMenu(
           "e.g. npm run check — empty/auto = auto-detect, off = disable",
         );
         if (entered === undefined) break;
-        setGateCommand(pi, state, entered);
+        await setGateCommand(state, ctx, entered);
         ctx.ui.notify(msg.gateSet(state), "info");
         break;
       }
@@ -285,7 +269,7 @@ async function openSettingsMenu(
         if (state.enabled) {
           pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
         }
-        persist(pi, state);
+        await persistConfig(state, ctx);
         ctx.ui.notify(
           `Bash: ${state.config.allowBash ? "read-only (mutations blocked)" : "removed entirely"}.`,
           "info",
@@ -319,11 +303,14 @@ async function showModelPicker(
       ? state.config.workerModel
       : target === "reviewer"
         ? state.config.reviewerModel || "auto"
-        : ctx.model
-          ? canonicalModelId(ctx.model)
-          : "";
+        : state.config.thinkingModel || (ctx.model ? canonicalModelId(ctx.model) : "");
 
-  const options = target === "reviewer" ? ["auto (use orchestrator model)"] : ([] as string[]);
+  const options =
+    target === "reviewer"
+      ? ["auto (use orchestrator model)"]
+      : target === "thinking"
+        ? ["current (do not override Pi)"]
+        : ([] as string[]);
 
   for (const m of available) {
     const id = canonicalModelId(m);
@@ -337,9 +324,15 @@ async function showModelPicker(
   if (choice.startsWith("auto")) {
     if (target === "reviewer") {
       state.config.reviewerModel = "";
-      persist(pi, state);
+      await persistConfig(state, ctx);
       ctx.ui.notify(msg.reviewerModelSet(state), "info");
     }
+    return;
+  }
+  if (choice.startsWith("current") && target === "thinking") {
+    state.config.thinkingModel = "";
+    await persistConfig(state, ctx);
+    ctx.ui.notify("Thinking model will follow Pi's current model.", "info");
     return;
   }
 
@@ -352,18 +345,20 @@ async function showModelPicker(
 
   if (target === "worker") {
     state.config.workerModel = canonicalModelId(resolved);
-    persist(pi, state);
+    await persistConfig(state, ctx);
     ctx.ui.notify(msg.workerModelSet(state), "info");
   } else if (target === "thinking") {
     const ok = await pi.setModel(resolved);
     if (!ok) {
       ctx.ui.notify(msg.noApiKey(modelId), "error");
     } else {
-      ctx.ui.notify(msg.thinkingModelSet(canonicalModelId(resolved)), "info");
+      state.config.thinkingModel = canonicalModelId(resolved);
+      await persistConfig(state, ctx);
+      ctx.ui.notify(msg.thinkingModelSet(state.config.thinkingModel), "info");
     }
   } else {
     state.config.reviewerModel = canonicalModelId(resolved);
-    persist(pi, state);
+    await persistConfig(state, ctx);
     ctx.ui.notify(msg.reviewerModelSet(state), "info");
   }
 }
@@ -395,7 +390,7 @@ async function showFallbackPicker(
 
   if (choice === "Clear all fallbacks") {
     state.config.fallbackModels = [];
-    persist(pi, state);
+    await persistConfig(state, ctx);
     ctx.ui.notify(msg.fallbackSet(state), "info");
     return;
   }
@@ -407,23 +402,25 @@ async function showFallbackPicker(
   } else {
     state.config.fallbackModels.push(modelId);
   }
-  persist(pi, state);
+  await persistConfig(state, ctx);
   ctx.ui.notify(msg.fallbackSet(state), "info");
 }
 
 export function enable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = true;
   pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
-  persist(pi, state);
 }
 
 function disable(pi: ExtensionAPI, state: BrainState): void {
   state.enabled = false;
   pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, false));
-  persist(pi, state);
 }
 
-function setGateCommand(pi: ExtensionAPI, state: BrainState, value: string): void {
+async function setGateCommand(
+  state: BrainState,
+  ctx: ExtensionCommandContext,
+  value: string,
+): Promise<void> {
   const normalized = value.trim();
   const lowered = normalized.toLowerCase();
   state.config.gateCommand =
@@ -432,13 +429,30 @@ function setGateCommand(pi: ExtensionAPI, state: BrainState, value: string): voi
       : lowered === "off" || lowered === "none"
         ? "off"
         : normalized;
-  persist(pi, state);
+  await persistConfig(state, ctx);
 }
 
-function setReviewerEnabled(pi: ExtensionAPI, state: BrainState, on: boolean): void {
+async function setReviewerEnabled(
+  pi: ExtensionAPI,
+  state: BrainState,
+  ctx: ExtensionCommandContext,
+  on: boolean,
+): Promise<void> {
   state.config.reviewerEnabled = on;
   if (state.enabled) {
     pi.setActiveTools(applyBrainTools(pi.getActiveTools(), state.config, true));
   }
-  persist(pi, state);
+  await persistConfig(state, ctx);
+}
+
+async function persistConfig(state: BrainState, ctx: ExtensionCommandContext): Promise<void> {
+  try {
+    await saveSettings(state.config, ctx.cwd);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(
+      `Brain setting changed for this session, but could not be saved: ${detail}`,
+      "warning",
+    );
+  }
 }

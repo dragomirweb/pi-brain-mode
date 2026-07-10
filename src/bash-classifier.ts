@@ -5,7 +5,7 @@
  * This classifier is a best-effort convenience/secondary gate for default Brain
  * Mode bash calls, not a security boundary. It gates common write/exec channels
  * in otherwise allowlisted commands, including `env` prefixes, newline/`&`
- * chaining, awk system/pipe/getline, sed w/e/r commands, find -exec/-fprint*,
+ * chaining, awk system/pipe/getline, sed w/e/r commands, find/fd exec flags,
  * sort -o, wget/curl output flags, and `&>` file redirects. Residual gaps
  * remain (for example, exotic sed `s///e` with addressing, novel tool flags,
  * variable indirection, unicode/whitespace tricks, and other shell evasions).
@@ -220,6 +220,14 @@ function classifySegment(segment: string): SegmentClassification {
     );
   }
 
+  if (tokens[0] === "fd" && hasFdExecFlag(tokens)) {
+    return segmentBlock(
+      "blocked_destructive",
+      "bash blocked: fd execution flags can run mutating commands.",
+      stripped,
+    );
+  }
+
   if (DESTRUCTIVE.some((pattern) => pattern.test(stripped))) {
     return segmentBlock(
       "blocked_destructive",
@@ -336,6 +344,22 @@ function isAllowlisted(tokens: string[], segment: string): boolean {
     return isSafeXargs(tokens);
   }
 
+  return false;
+}
+
+function hasFdExecFlag(tokens: string[]): boolean {
+  for (const token of tokens.slice(1)) {
+    if (token === "--") return false;
+    if (
+      /^-[^-]*[xX]/.test(token) ||
+      token === "--exec" ||
+      token.startsWith("--exec=") ||
+      token === "--exec-batch" ||
+      token.startsWith("--exec-batch=")
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 

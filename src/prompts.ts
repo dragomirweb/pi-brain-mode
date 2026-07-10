@@ -318,9 +318,10 @@ export function brainDisabled(): string {
 }
 
 export function brainUsage(): string {
-  return `/brain — open settings menu
+  return `/brain or /brains — open settings menu
 /brain on|off|status|log|help
-/brain worker|thinking <model-id>
+/brain worker <model-id>
+/brain thinking <model-id|current>
 /brain fallback <id[,id]|none>
 /brain reviewer on|off|always|manual|auto|<model-id>
   (always/manual toggle auto-review; auto = use the orchestrator model)

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { BrainConfig } from "./state.ts";
 
@@ -6,6 +6,7 @@ const DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_FALLBACK_MODELS = ["claude-opus-4-8"];
 const DEFAULT_REVIEWER_MODEL = "";
 export const DEFAULT_CONFIG: BrainConfig = {
+  thinkingModel: "",
   workerModel: DEFAULT_WORKER_MODEL,
   fallbackModels: [...DEFAULT_FALLBACK_MODELS],
   allowBash: true,
@@ -16,6 +17,10 @@ export const DEFAULT_CONFIG: BrainConfig = {
 };
 
 export function registerBrainFlags(pi: ExtensionAPI): void {
+  pi.registerFlag("brain-on", {
+    type: "boolean",
+    description: "Start this session with Brain Mode enabled (default: disabled).",
+  });
   pi.registerFlag("brain-worker-model", {
     type: "string",
     description: "Worker model id for delegate_to_coder.",
@@ -51,11 +56,11 @@ export function registerBrainFlags(pi: ExtensionAPI): void {
   });
   pi.registerFlag("brain-off", {
     type: "boolean",
-    description: "Start with Brain Mode disabled (default: enabled).",
+    description: "Start with Brain Mode disabled (the default; overrides --brain-on).",
   });
 }
 
-export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig {
+export function resolveConfig(pi: ExtensionAPI, base: Partial<BrainConfig>): BrainConfig {
   const modelFlag = pi.getFlag("brain-worker-model");
   const fallbackFlag = pi.getFlag("brain-worker-fallback");
   const reviewerModelFlag = pi.getFlag("brain-reviewer-model");
@@ -68,13 +73,21 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
       : base.fallbackModels;
 
   return {
-    ...base,
+    thinkingModel:
+      typeof base.thinkingModel === "string" ? base.thinkingModel : DEFAULT_CONFIG.thinkingModel,
     workerModel:
       typeof modelFlag === "string" && modelFlag.length > 0
         ? modelFlag
-        : base.workerModel || DEFAULT_WORKER_MODEL,
-    fallbackModels,
-    allowBash: pi.getFlag("brain-no-bash") === true ? false : base.allowBash,
+        : base.workerModel || DEFAULT_CONFIG.workerModel,
+    fallbackModels: Array.isArray(fallbackModels)
+      ? fallbackModels.filter((model): model is string => typeof model === "string")
+      : [...DEFAULT_CONFIG.fallbackModels],
+    allowBash:
+      pi.getFlag("brain-no-bash") === true
+        ? false
+        : typeof base.allowBash === "boolean"
+          ? base.allowBash
+          : DEFAULT_CONFIG.allowBash,
     reviewerEnabled:
       pi.getFlag("brain-no-reviewer") === true
         ? false
@@ -95,6 +108,32 @@ export function resolveConfig(pi: ExtensionAPI, base: BrainConfig): BrainConfig 
           : true,
     gateCommand: resolveGateCommandConfig(pi.getFlag("brain-gate-command"), base.gateCommand),
   };
+}
+
+type ModelRegistry = ExtensionContext["modelRegistry"];
+type Model = NonNullable<ExtensionContext["model"]>;
+
+/** Return the stable provider-qualified id used in persisted settings. */
+export function canonicalModelId(model: Model): string {
+  return `${model.provider}/${model.id}`;
+}
+
+/** Resolve a provider-qualified or unique bare model id from Pi's registry. */
+export function resolveModel(registry: ModelRegistry, idStr: string): Model | undefined {
+  const trimmed = idStr.trim();
+  if (trimmed === "") return undefined;
+
+  if (trimmed.includes("/")) {
+    const slashIndex = trimmed.indexOf("/");
+    const provider = trimmed.slice(0, slashIndex);
+    const modelId = trimmed.slice(slashIndex + 1);
+    const found = registry.find(provider, modelId);
+    if (found) return found;
+  }
+
+  return registry
+    .getAll()
+    .find((model) => canonicalModelId(model) === trimmed || model.id === trimmed);
 }
 
 function resolveGateCommandConfig(flag: unknown, base: string | undefined): string {
